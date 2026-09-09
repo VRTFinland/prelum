@@ -1,0 +1,227 @@
+@import url("https://fonts.googleapis.com/css2?family=Inter:wght@500;700&family=Space+Grotesk:wght@500;700&display=swap");
+
+/* Two faces, each with one job: the name is set in Inter wherever it appears beside the logo, and
+   headings carry the more characterful grotesk. Body copy and code keep the theme's own stack,
+   which is tuned for long-form reading. The PDF manual carries both faces in its request, so the
+   two surfaces present the name and the headings identically. */
+:root {
+  --prelum-wordmark: "Inter", "Roboto", system-ui, sans-serif;
+  --prelum-display: "Space Grotesk", "Roboto", system-ui, sans-serif;
+}
+
+.md-header__topic > .md-ellipsis {
+  font-family: var(--prelum-wordmark);
+  letter-spacing: -0.01em;
+}
+
+.md-header__topic:first-child > .md-ellipsis {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  height: 2.2rem;
+  line-height: 1;
+}
+
+.md-header__topic:first-child > .md-ellipsis::after {
+  margin-top: 0.12rem;
+  color: rgb(255 255 255 / 58%);
+  font-size: 0.42rem;
+  font-weight: 500;
+  letter-spacing: 0.09em;
+  width: 3rem;
+  background: url("../gisgro-logo-white.svg") right center / auto 0.42rem no-repeat;
+  content: "by";
+}
+
+.md-typeset h1,
+.md-typeset h2,
+.md-typeset h3 {
+  font-family: var(--prelum-display);
+}
+
+.md-header {
+  background-color: #252b38;
+}
+
+.md-header__button.md-logo {
+  padding: 0.2rem;
+}
+
+.md-header__button.md-logo img,
+.md-nav__button.md-logo img {
+  width: auto;
+  height: 2rem;
+}
+
+[dir="ltr"] .md-header__title {
+  margin-left: 0.35rem;
+}
+
+[dir="rtl"] .md-header__title {
+  margin-right: 0.35rem;
+}
+
+.prelum-hero {
+  position: relative;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(16rem, 0.85fr);
+  gap: clamp(2rem, 5vw, 4rem);
+  align-items: center;
+  overflow: hidden;
+  margin: 1rem 0 2.5rem;
+  padding: clamp(2rem, 6vw, 4.5rem);
+  color: #fff;
+  background:
+    radial-gradient(circle at 88% 12%, rgb(150 199 168 / 28%), transparent 32%),
+    linear-gradient(135deg, #17213d 0%, #26365c 58%, #28564f 100%);
+  border-radius: 0.6rem;
+  box-shadow: 0 1rem 2.5rem rgb(23 33 61 / 18%);
+}
+
+.prelum-hero__copy {
+  position: relative;
+  z-index: 1;
+}
+
+.prelum-hero__brand {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  margin-bottom: 1.5rem;
+  color: #fff;
+  font-family: var(--prelum-wordmark);
+  font-size: 1.75rem;
+  font-weight: 700;
+  letter-spacing: -0.025em;
+}
+
+.md-typeset .prelum-hero__logo {
+  display: block;
+  width: 3.5rem;
+  height: 3.5rem;
+}
+
+.prelum-hero__eyebrow {
+  margin: 0 0 0.6rem;
+  color: #96c7a8;
+  font-size: 0.7rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.md-typeset .prelum-hero h1 {
+  max-width: 15ch;
+  margin: 0;
+  color: #fff;
+  font-family: var(--prelum-display);
+  font-size: clamp(2rem, 5vw, 3.4rem);
+  font-weight: 700;
+  line-height: 1.04;
+  letter-spacing: -0.02em;
+}
+
+.prelum-hero__lead {
+  max-width: 34rem;
+  margin: 1.2rem 0 0;
+  color: rgb(255 255 255 / 82%);
+  font-size: 0.9rem;
+}
+
+.prelum-hero__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 1.6rem;
+}
+
+.md-typeset .prelum-hero .md-button {
+  color: #fff;
+  border-color: rgb(255 255 255 / 55%);
+}
+
+.md-typeset .prelum-hero .md-button:hover,
+.md-typeset .prelum-hero .md-button:focus {
+  color: #17213d;
+  background-color: #fff;
+  border-color: #fff;
+}
+
+.md-typeset .prelum-hero .md-button--primary {
+  color: #17213d;
+  background-color: #96c7a8;
+  border-color: #96c7a8;
+}
+
+.md-typeset .prelum-hero .md-button--primary:hover,
+.md-typeset .prelum-hero .md-button--primary:focus {
+  background-color: #b9dbc5;
+  border-color: #b9dbc5;
+}
+
+.prelum-hero__request {
+  position: relative;
+  z-index: 1;
+  min-width: 0;
+  overflow: hidden;
+  background-color: rgb(8 14 29 / 72%);
+  border: 1px solid rgb(255 255 255 / 14%);
+  border-radius: 0.5rem;
+  box-shadow: 0 1rem 2rem rgb(5 10 24 / 28%);
+}
+
+.prelum-hero__request-header {
+  display: flex;
+  gap: 0.55rem;
+  align-items: center;
+  padding: 0.75rem 1rem;
+  color: rgb(255 255 255 / 72%);
+  border-bottom: 1px solid rgb(255 255 255 / 10%);
+}
+
+.prelum-hero__request-header span {
+  color: #96c7a8;
+  font-size: 0.58rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+}
+
+.prelum-hero__request-header code {
+  padding: 0;
+  color: inherit;
+  background: none;
+}
+
+.md-typeset .prelum-hero__request pre {
+  margin: 0;
+}
+
+.md-typeset .prelum-hero__request pre > code {
+  padding: 1rem;
+  color: rgb(255 255 255 / 88%);
+  background: none;
+}
+
+@media screen and (max-width: 59.984375em) {
+  .prelum-hero {
+    grid-template-columns: 1fr;
+  }
+
+  .prelum-hero__request {
+    max-width: 32rem;
+  }
+}
+
+@media screen and (max-width: 29.984375em) {
+  .prelum-hero {
+    margin-right: -0.4rem;
+    margin-left: -0.4rem;
+    padding: 1.5rem;
+    border-radius: 0.4rem;
+  }
+
+  .md-typeset .prelum-hero__logo {
+    width: 3rem;
+    height: 3rem;
+  }
+}

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="prelum-title">
+  <title id="prelum-title">Prelum</title>
+  <defs>
+    <linearGradient id="prelum-paper" x1="0" y1="0" x2="0.35" y2="1">
+      <stop offset="0" stop-color="#EDEEF2"/>
+      <stop offset="1" stop-color="#DADCE4"/>
+    </linearGradient>
+    <filter id="prelum-press" x="-20%" y="-20%" width="140%" height="140%">
+      <feComponentTransfer in="SourceAlpha" result="inv">
+        <feFuncA type="table" tableValues="1 0"/>
+      </feComponentTransfer>
+      <feOffset in="inv" dx="5" dy="5" result="so"/>
+      <feGaussianBlur in="so" stdDeviation="4.5" result="sb"/>
+      <feComposite in="sb" in2="SourceAlpha" operator="in" result="sm"/>
+      <feFlood flood-color="#0F1526" flood-opacity="0.55" result="sc"/>
+      <feComposite in="sc" in2="sm" operator="in" result="shadow"/>
+      <feOffset in="inv" dx="-4" dy="-4" result="ho"/>
+      <feGaussianBlur in="ho" stdDeviation="4" result="hb"/>
+      <feComposite in="hb" in2="SourceAlpha" operator="in" result="hm"/>
+      <feFlood flood-color="#FFFFFF" flood-opacity="0.95" result="hc"/>
+      <feComposite in="hc" in2="hm" operator="in" result="hi"/>
+      <feMerge>
+        <feMergeNode in="SourceGraphic"/>
+        <feMergeNode in="hi"/>
+        <feMergeNode in="shadow"/>
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="256" height="256" fill="url(#prelum-paper)"/>
+  <path filter="url(#prelum-press)" fill="#E2E4EB" fill-rule="evenodd" d="M78 216V40h46a54 54 0 0 1 0 108h-12v68z M112 74h12a20 20 0 0 1 0 40h-12z"/>
+</svg>

@@ -1,0 +1,19 @@
+{
+  "title": "Quarterly Berth Condition Report",
+  "site": "Northern Marina, Oulu",
+  "period": "Q3 2026",
+  "sections": [
+    {
+      "heading": "Summary",
+      "body": "Sixty-two berths were inspected during the period. Four require remedial work before the winter season and are listed in the findings below."
+    },
+    {
+      "heading": "Findings",
+      "body": "Berths B-14 and B-15 show fastener corrosion at the shoreward hinge. Berth C-02 has a damaged fender. Berth C-09 requires a replacement cleat."
+    },
+    {
+      "heading": "Recommendations",
+      "body": "Schedule the four remedial items before the first freeze. Re-inspect the B row after the works and update the asset labels accordingly."
+    }
+  ]
+}

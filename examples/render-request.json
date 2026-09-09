@@ -1,0 +1,16 @@
+{
+  "source": "// A minimal template showing what a caller sends as `source`.\n//\n// The renderer binds the request's `data` object to a Typst variable called `data` in a prelude it\n// prepends to this file, and writes any `files` entries alongside it \u2014 so `lib/label.typ`\n// below is imported by the same relative path used as its key in the request.\n\n#import \"lib/label.typ\": caption\n\n#set page(paper: \"a4\", margin: 2cm)\n#set text(size: 11pt)\n\n= #caption(data.name)\n\nRendered by Prelum on request.\n",
+  "files": {
+    "lib/label.typ": {
+      "encoding": "text",
+      "content": "#let caption(name) = [Hello, #name!]\n"
+    }
+  },
+  "data": {
+    "name": "World"
+  },
+  "output": {
+    "format": "pdf",
+    "filename": "hello.pdf"
+  }
+}

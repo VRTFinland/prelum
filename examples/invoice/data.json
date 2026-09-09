@@ -1,0 +1,21 @@
+{
+  "number": "2026-0147",
+  "date": "1 September 2026",
+  "due": "1 October 2026",
+  "seller": {
+    "name": "Harbour Works Oy",
+    "address": ["Rantakatu 12", "20100 Turku", "Finland"],
+    "vat": "FI12345678"
+  },
+  "customer": {
+    "name": "Northern Marina Ltd",
+    "address": ["Satamatie 4", "90100 Oulu", "Finland"]
+  },
+  "currency": "EUR",
+  "vat_rate": 0.255,
+  "lines": [
+    { "description": "Pontoon inspection", "quantity": 12, "unit": "h", "unit_price": 95.0 },
+    { "description": "Underwater survey", "quantity": 1, "unit": "day", "unit_price": 1450.0 },
+    { "description": "Condition report", "quantity": 1, "unit": "pcs", "unit_price": 380.0 }
+  ]
+}

@@ -1,0 +1,75 @@
+site_name: Prelum
+site_url: https://vrtfinland.github.io/prelum/
+site_description: A small HTTP service for rendering caller-supplied Typst projects
+repo_url: https://github.com/VRTFinland/prelum
+repo_name: Source code
+
+exclude_docs: |
+  design/
+  examples/manifest.json
+
+theme:
+  name: material
+  favicon: prelum-logo-concept.svg
+  logo: prelum-logo-concept-white.svg
+  features:
+    - content.code.copy
+    - navigation.footer
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-7
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      accent: indigo
+      toggle:
+        icon: material/brightness-4
+        name: Switch to light mode
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.snippets:
+      base_path: ["."]
+      check_paths: true
+  - pymdownx.superfences
+  - toc:
+      permalink: true
+
+extra_css:
+  - stylesheets/extra.css
+
+nav:
+  - Home: index.md
+  - Getting started: getting-started.md
+  - API:
+      - Render request: api/render.md
+      - Output formats: api/output-formats.md
+      - Errors: api/errors.md
+      - OpenAPI: api/openapi.md
+  - Examples: examples.md
+  - Operations:
+      - Configuration: operations/configuration.md
+      - Docker and releases: operations/docker.md
+      - Fonts and packages: operations/fonts-and-packages.md
+      - Security model: operations/security-model.md
+  - Contributing: https://github.com/VRTFinland/prelum/blob/main/CONTRIBUTING.md
+  - Licence: https://github.com/VRTFinland/prelum/blob/main/LICENSE
+
+copyright: Copyright &copy; <a href="https://gisgro.com">GISGRO Oy</a> — Apache-2.0

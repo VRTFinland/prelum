@@ -1,0 +1,30 @@
+**/__pycache__/*
+*.pyc
+*.pyo
+*.pyd
+*.iml
+env
+venv
+.env
+.venv
+.DS_Store
+.coverage
+.coverage.*
+.cache
+.mypy_cache
+.pytest_cache
+.shared
+.claude
+.serena/
+.playwright-cli/
+
+# Agent working artefacts: implementation plans are session scratch, not repository content.
+docs/superpowers/plans/
+
+# Generated documentation artefacts
+docs/api/openapi.json
+docs/examples/
+site/
+
+# Coverage reports
+htmlcov/
