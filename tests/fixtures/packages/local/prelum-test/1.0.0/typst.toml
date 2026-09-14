@@ -1,0 +1,6 @@
+[package]
+name = "prelum-test"
+version = "1.0.0"
+entrypoint = "lib.typ"
+authors = ["Prelum tests"]
+license = "MIT"

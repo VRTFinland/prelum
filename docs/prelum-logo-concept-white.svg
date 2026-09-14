@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-labelledby="prelum-concept-title">
+  <title id="prelum-concept-title">Prelum</title>
+  <g fill="none" stroke="#7f96ff" stroke-linecap="round" stroke-linejoin="round" stroke-width="24">
+    <path d="M78 30c-19 0-24 13-24 34v27c0 21-8 33-26 37 18 4 26 16 26 37v27c0 21 5 34 24 34"/>
+    <path d="M178 30c19 0 24 13 24 34v27c0 21 8 33 26 37-18 4-26 16-26 37v27c0 21-5 34-24 34"/>
+  </g>
+  <g fill="none" stroke-linecap="round" stroke-width="18">
+    <path stroke="#fff" d="M91 82h74"/>
+    <path stroke="#fff" d="M91 128h25"/>
+    <path stroke="#7f96ff" d="M145 128h20"/>
+    <path stroke="#7f96ff" d="M91 174h55"/>
+  </g>
+</svg>

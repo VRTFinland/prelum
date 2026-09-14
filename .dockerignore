@@ -1,0 +1,47 @@
+# Build-irrelevant local state that should never reach the Docker daemon as build context.
+# examples/ and tests/ are deliberately NOT excluded: the Dockerfile COPYs both into the builder
+# stage, and the integration-marked tests compile against examples/ inside the image.
+
+.git
+.gitignore
+
+# Python virtualenvs and caches
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+*.pyo
+*.pyd
+.mypy_cache
+.pytest_cache
+.cache
+.ruff_cache
+
+# Coverage output
+.coverage
+.coverage.*
+htmlcov
+
+# Editor/OS noise
+.idea
+.vscode
+*.iml
+.DS_Store
+
+# Agent/tooling working directories, not part of the runtime image
+.claude
+.superpowers
+.serena
+.shared
+
+# Workflows stay in the context because builder-stage tests verify their release invariants.
+README.md
+AGENTS.md
+SYNC_PROTOCOL.md
+*.md
+
+# docs/ and mkdocs.yml stay in the context for the same reason as examples/ and tests/: the printed
+# manual is generated from the published pages in their navigation order, so the tests covering it
+# read both inside the image. Neither reaches the final stage, which copies only app/.

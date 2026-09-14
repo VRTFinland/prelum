@@ -1,0 +1,109 @@
+import json
+from pathlib import Path
+
+from app.core.constraints import files_key_rules
+from scripts.export_constraints import export_constraints
+from scripts.export_openapi import export_openapi
+
+ROOT = Path(__file__).resolve().parent.parent
+MAKEFILE = ROOT / "Makefile"
+DOCS_CONFIG = ROOT / "zensical.toml"
+PYPROJECT = ROOT / "pyproject.toml"
+
+
+def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Path):
+    destination = tmp_path / "openapi.json"
+
+    export_openapi(destination)
+
+    schema = json.loads(destination.read_text(encoding="utf-8"))
+    assert {"/health", "/v1/constraints", "/v1/render"} <= schema["paths"].keys()
+    assert schema["info"]["title"] == "Prelum"
+    assert schema["info"]["version"] == "1.0.1"
+
+    security_schemes = schema["components"]["securitySchemes"]
+    assert security_schemes == {
+        "PrelumApiToken": {
+            "type": "apiKey",
+            "in": "header",
+            "name": "X-Prelum-Api-Token",
+        }
+    }
+    assert schema["paths"]["/v1/render"]["post"]["security"] == [{"PrelumApiToken": []}]
+
+    constraints = schema["paths"]["/v1/constraints"]["get"]["responses"]
+    assert constraints["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ConstraintsResponse"
+    }
+    assert constraints["403"]["content"]["application/problem+json"]["schema"]["title"] == "Problem"
+    constraints_schema = schema["components"]["schemas"]["ConstraintsResponse"]
+    assert {
+        "rules_version",
+        "key_pattern",
+        "set_rules",
+        "conformance_vectors",
+        "limits",
+    } <= set(constraints_schema["required"])
+    assert constraints_schema["properties"]["limits"] == {"$ref": "#/components/schemas/ConstraintLimits"}
+
+    responses = schema["paths"]["/v1/render"]["post"]["responses"]
+    assert set(responses["200"]["content"]) == {
+        "application/pdf",
+        "application/zip",
+        "image/png",
+        "image/svg+xml",
+    }
+    for status in ("400", "403", "408", "413", "422", "429", "500", "503"):
+        problem = responses[status]["content"]
+        assert set(problem) == {"application/problem+json"}
+        problem_schema = problem["application/problem+json"]["schema"]
+        assert set(problem_schema["required"]) == {"code", "title", "status", "detail", "instance", "context"}
+        assert problem_schema["properties"]["detail"]["type"] == "string"
+        assert problem_schema["properties"]["context"]["type"] == "object"
+
+    render_request = schema["components"]["schemas"]["RenderRequest"]
+    assert "source" in render_request["required"]
+
+
+def test_makefile_owns_the_shared_documentation_commands():
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    pyproject = PYPROJECT.read_text(encoding="utf-8")
+
+    assert "docs-build:" in makefile
+    assert "docs-serve:" in makefile
+    assert "python -m scripts.export_openapi" in makefile
+    assert "zensical build --strict" in makefile
+    assert '"zensical>=' in pyproject
+    assert "mkdocs-material" not in pyproject
+
+
+def test_internal_design_records_are_not_in_the_repository():
+    """
+    They are kept on disk and out of git, not merely out of the documentation source tree.
+
+    The repository is public, so a record outside `docs/` is still readable by anyone; the earlier
+    arrangement kept proposals off the site while publishing them in the tree. Zensical has no
+    `exclude_docs`, so a build option cannot be the mechanism either.
+    """
+    config = DOCS_CONFIG.read_text(encoding="utf-8")
+
+    assert "exclude_docs" not in config
+    assert not (ROOT / "docs" / "design").exists()
+
+
+def test_constraints_export_publishes_the_rules_without_deployment_configuration(tmp_path: Path):
+    destination = tmp_path / "files-key-rules.json"
+
+    export_constraints(destination)
+
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document == files_key_rules()
+    assert "limits" not in document, "the static artefact must not imply a deployment's limits"
+    assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
+
+
+def test_makefile_generates_the_constraints_artefact_for_the_site():
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "python -m scripts.export_constraints" in makefile
+    assert "docs-build: docs-examples docs-openapi docs-constraints" in makefile

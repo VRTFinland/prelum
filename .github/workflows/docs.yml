@@ -1,0 +1,81 @@
+name: docs
+
+on:
+  push:
+    branches: ["main"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    # configure-pages reads the Pages site to derive the base URL, and a permissions block sets
+    # every scope it omits to none. Read is all it needs: enabling Pages requires a PAT, so
+    # Settings -> Pages -> Source -> GitHub Actions is a one-time manual step, and write stays
+    # confined to the deploy job that publishes.
+    permissions:
+      contents: read
+      pages: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - name: Install documentation dependencies
+        run: uv sync --locked --group docs
+      - name: Install Typst
+        # The manual example is rendered during the documentation build, so this job needs the
+        # compiler. The version is read from the Dockerfile rather than repeated here: two places
+        # naming a version is one place too many, and a documentation build that used a different
+        # compiler than the service would publish a manual the service cannot reproduce.
+        run: |
+          version="$(sed -n 's|^FROM ghcr.io/typst/typst:\([0-9.]*\)@.*|\1|p' Dockerfile)"
+          test -n "$version"
+          curl -fsSL "https://github.com/typst/typst/releases/download/v${version}/typst-x86_64-unknown-linux-musl.tar.xz" -o typst.tar.xz
+          tar -xJf typst.tar.xz
+          sudo install typst-x86_64-unknown-linux-musl/typst /usr/local/bin/typst
+          typst --version
+      - name: Build documentation
+        run: make docs-build
+      - name: Configure GitHub Pages
+        if: >-
+          github.event.repository.visibility == 'public' &&
+          github.ref == 'refs/heads/main' &&
+          github.event_name != 'pull_request'
+        uses: actions/configure-pages@v5
+      - name: Upload GitHub Pages artifact
+        if: >-
+          github.event.repository.visibility == 'public' &&
+          github.ref == 'refs/heads/main' &&
+          github.event_name != 'pull_request'
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    if: >-
+      github.event.repository.visibility == 'public' &&
+      github.ref == 'refs/heads/main' &&
+      github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
