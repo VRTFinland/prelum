@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, LiteralString, cast
+from typing import Annotated, ClassVar, Literal, LiteralString, NoReturn, cast
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
@@ -162,6 +162,43 @@ _PDF_A_VERSION = {
 }
 
 
+class OutputRule(StrEnum):
+    """
+    The published id of every output-option rule this module enforces.
+
+    A rejection says only `invalid_request` at `body.output`, so until these ids existed the one
+    thing telling a broken rule from its neighbour was `msg` — prose, which docs/api/errors.md
+    reserves the right to reword, so a caller branching on it was transcribing our wording. The id
+    travels in `context.rule`, and app/core/output_rules.py publishes the same ids beside the
+    conformance vectors: a mirror can then assert *which* constraint fired, not merely that one did.
+    """
+
+    duplicate_standards = "duplicate_standards"
+    multiple_pdf_a_standards = "multiple_pdf_a_standards"
+    ua_1_with_pdf_a_4 = "ua_1_with_pdf_a_4"
+    version_conflicts_with_standard = "version_conflicts_with_standard"
+    ua_1_with_pdf_2_0 = "ua_1_with_pdf_2_0"
+    pages_with_tagged_standard = "pages_with_tagged_standard"
+    pages_requires_archive = "pages_requires_archive"
+    page_with_archive = "page_with_archive"
+    page_selection_too_long = "page_selection_too_long"
+    page_selection_too_many_segments = "page_selection_too_many_segments"
+    page_selection_malformed = "page_selection_malformed"
+    page_range_end_precedes_start = "page_range_end_precedes_start"
+
+
+def _reject(rule: OutputRule, message: str) -> NoReturn:
+    """
+    Fail validation with the id of the rule that fired carried beside its prose.
+
+    The error type stays `value_error`, which is exactly what a bare ValueError raised from a
+    validator produces: `errors[].type` is published, and an existing field changing meaning needs a
+    new API version. The id therefore arrives as a new context key instead, which app/main.py lifts
+    out of Pydantic's ctx onto the problem body.
+    """
+    raise PydanticCustomError("value_error", "{message}", {"message": message, "rule": rule.value})
+
+
 @dataclass(frozen=True, slots=True)
 class PageRange:
     start: int
@@ -180,13 +217,22 @@ class PageSelectionLimitError(ValueError):
 
 def parse_page_selection(value: str) -> tuple[PageRange, ...]:
     if len(value) > _MAX_PAGE_SELECTION_LENGTH:
-        raise ValueError(f"pages must not exceed {_MAX_PAGE_SELECTION_LENGTH} characters")
+        _reject(OutputRule.page_selection_too_long, f"pages must not exceed {_MAX_PAGE_SELECTION_LENGTH} characters")
 
     selections = value.split(",")
-    if len(selections) > _MAX_PAGE_SELECTION_SEGMENTS or any(
-        _PAGE_RANGE.fullmatch(selection) is None for selection in selections
-    ):
-        raise ValueError("pages must be a comma-separated list of positive pages or ranges")
+    # Counted before the selections are matched, rather than beside them: the count is the cheap
+    # half of what used to be one condition, and the two answers are now separate published rules,
+    # so a value breaking both has to name the one that bounds the work the other would do.
+    if len(selections) > _MAX_PAGE_SELECTION_SEGMENTS:
+        _reject(
+            OutputRule.page_selection_too_many_segments,
+            f"pages must not exceed {_MAX_PAGE_SELECTION_SEGMENTS} comma-separated selections",
+        )
+    if any(_PAGE_RANGE.fullmatch(selection) is None for selection in selections):
+        _reject(
+            OutputRule.page_selection_malformed,
+            "pages must be a comma-separated list of positive pages or ranges",
+        )
 
     ranges: list[PageRange] = []
     for selection in selections:
@@ -199,7 +245,7 @@ def parse_page_selection(value: str) -> tuple[PageRange, ...]:
         start = int(start_text)
         end = int(end_text) if end_text else None
         if end is not None and end < start:
-            raise ValueError("page range end must not precede its start")
+            _reject(OutputRule.page_range_end_precedes_start, "page range end must not precede its start")
         ranges.append(PageRange(start, end))
 
     return tuple(ranges)
@@ -256,20 +302,26 @@ class PdfOutput(_RenderOutputBase):
     @model_validator(mode="after")
     def validate_pdf_options(self) -> PdfOutput:
         if len(set(self.standards)) != len(self.standards):
-            raise ValueError("PDF standards must not contain duplicates")
+            _reject(OutputRule.duplicate_standards, "PDF standards must not contain duplicates")
 
         pdf_a = [standard for standard in self.standards if standard in _PDF_A_VERSION]
         if len(pdf_a) > 1:
-            raise ValueError("Only one PDF/A standard can be selected")
+            _reject(OutputRule.multiple_pdf_a_standards, "Only one PDF/A standard can be selected")
         if PdfStandard.ua_1 in self.standards and any(standard.value.startswith("a-4") for standard in pdf_a):
-            raise ValueError("PDF/UA-1 is incompatible with PDF/A-4")
+            _reject(OutputRule.ua_1_with_pdf_a_4, "PDF/UA-1 is incompatible with PDF/A-4")
 
         if self.version is not None and pdf_a and self.version != _PDF_A_VERSION[pdf_a[0]]:
-            raise ValueError(f"{pdf_a[0].value} requires PDF version {_PDF_A_VERSION[pdf_a[0]].value}")
+            _reject(
+                OutputRule.version_conflicts_with_standard,
+                f"{pdf_a[0].value} requires PDF version {_PDF_A_VERSION[pdf_a[0]].value}",
+            )
         if self.version == PdfVersion.v2_0 and PdfStandard.ua_1 in self.standards:
-            raise ValueError("PDF/UA-1 is incompatible with PDF 2.0")
+            _reject(OutputRule.ua_1_with_pdf_2_0, "PDF/UA-1 is incompatible with PDF 2.0")
         if self.pages is not None and _TAGGED_PDF_STANDARDS.intersection(self.standards):
-            raise ValueError("PDF page selection cannot be combined with a standard that requires tagging")
+            _reject(
+                OutputRule.pages_with_tagged_standard,
+                "PDF page selection cannot be combined with a standard that requires tagging",
+            )
 
         return self
 
@@ -282,9 +334,9 @@ class _ImageOutputBase(_RenderOutputBase):
     @model_validator(mode="after")
     def validate_image_options(self) -> _ImageOutputBase:
         if self.archive is None and self.pages is not None:
-            raise ValueError("pages requires archive 'zip'")
+            _reject(OutputRule.pages_requires_archive, "pages requires archive 'zip'")
         if self.archive is not None and self.page is not None:
-            raise ValueError("page cannot be combined with an archive")
+            _reject(OutputRule.page_with_archive, "page cannot be combined with an archive")
         return self
 
 

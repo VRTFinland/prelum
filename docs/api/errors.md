@@ -69,7 +69,7 @@ text before shortening, so these fields can always be encoded as UTF-8.
 | `size` | integer | A measured size in bytes |
 | `count` | integer | A measured or requested number of things |
 | `key` | string | One `files` key, complete and exactly as sent |
-| `rule` | string | The `id` of the whole-set files-key rule that rejected the request, as published by `GET /v1/constraints` |
+| `rule` | string | The `id` of the rule that rejected the request — a whole-set files-key rule or an output-option rule — as published by `GET /v1/constraints`. Present whenever an identified rule fired, so a client can branch on the constraint rather than on `msg` |
 | `path` | array | Where a value sits in `data`: object keys as strings, array indices as integers. String segments longer than 80 characters are shortened with `…` |
 | `subject` | string | `key` or `value`: which string at `path` is at fault. An oversized object key is its own last path segment, so the path alone cannot say |
 | `declared_size` | integer | The `Content-Length` the caller sent; not a measurement |
@@ -82,7 +82,7 @@ text before shortening, so these fields can always be encoded as UTF-8.
 
 | Status | `code` | `origin` | `context` | Cause |
 | ---: | --- | --- | --- | --- |
-| 400 | `invalid_request` | `request` | `errors`, absent when the body could not be parsed at all | Missing, malformed, unknown or format-inappropriate request field, or a body no JSON parser accepts |
+| 400 | `invalid_request` | `request` | `errors`, absent when the body could not be parsed at all; `rule` when an output-option rule rejected it | Missing, malformed, unknown or format-inappropriate request field, or a body no JSON parser accepts |
 | 400 | `unsupported_format` | `request` | `errors` | `format` outside `pdf`, `svg` and `png` |
 | 400 | `invalid_template_path` | `request` | `errors` | Unsafe, non-normalised or otherwise invalid `files` key |
 | 400 | `invalid_file_data` | `request` | `key` or `count` + `limit`, `rule` when a whole-set rule rejected it, and `errors` only when validation raised it (see below) | Malformed base64, excessive or colliding entries, or non-UTF-8 text |

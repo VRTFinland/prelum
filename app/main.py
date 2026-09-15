@@ -320,6 +320,21 @@ def create_app() -> FastAPI:
             # "message" is the prose already in msg.
             lifted = cast(dict[str, object], classified[0].get("ctx", {}))
             context.update({key: value for key, value in lifted.items() if key != "message"})
+        else:
+            # An output-option rule keeps the `value_error` type every other validator failure has,
+            # so `loc`, `type` and `code` are the same whichever of them fired: without the id, the
+            # only thing separating them is `msg`, which is prose a caller may not branch on. Read
+            # from the first error carrying one, matching how `classified` picks its own.
+            rule = next(
+                (
+                    value
+                    for error in errors
+                    if isinstance(value := cast(dict[str, object], error.get("ctx", {})).get("rule"), str)
+                ),
+                None,
+            )
+            if rule is not None:
+                context["rule"] = rule
 
         # Validation errors carry the raised exception in ctx; encode at any depth so the response
         # body cannot fail to serialise.
