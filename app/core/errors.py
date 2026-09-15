@@ -28,11 +28,6 @@ def for_message(value: str, *, limit: int = _MESSAGE_VALUE_LIMIT) -> str:
     return f"{value[:limit]}…"
 
 
-def status_is_server_fault(status: HTTPStatus) -> bool:
-    """Whether a failure with this status is ours rather than the caller's, i.e. worth paging for."""
-    return status >= HTTPStatus.INTERNAL_SERVER_ERROR
-
-
 class Origin(StrEnum):
     """What a failure is attributable to, published beside `code` on every problem body.
 
@@ -162,9 +157,9 @@ class ServiceUnavailableError(AppError):
 class ServiceOverloadedError(AppError):
     """Raised when no render slot became free within the configured queue wait.
 
-    429 rather than 503 on purpose: `status_is_server_fault` treats everything from 500 up as an
-    incident, and shedding load is designed behaviour, not a fault. A busy service should not page
-    anyone. The Retry-After header travels with the response so the caller knows when to return.
+    429 rather than 503 on purpose: this class declares `Origin.capacity`, so `is_server_fault` is
+    false for it, and shedding load is designed behaviour, not a fault. A busy service should not
+    page anyone. The Retry-After header travels with the response so the caller knows when to return.
     """
 
     status: HTTPStatus = HTTPStatus.TOO_MANY_REQUESTS

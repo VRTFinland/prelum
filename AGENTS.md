@@ -77,8 +77,9 @@ The rules below are load-bearing — every one of them exists because breaking i
   `RULES_WITHOUT_VECTORS`.
 - **Queue waiting is bounded, and shedding is not an incident.** `/v1/render` waits at most
   `PRELUM_MAX_QUEUE_WAIT_SECS` for a semaphore permit and then raises `ServiceOverloadedError`
-  (429 + `Retry-After`). 429 rather than 503 is deliberate: `status_is_server_fault` treats
-  everything from 500 up as worth paging for, and shedding load is designed behaviour. The permit
+  (429 + `Retry-After`). 429 rather than 503 is deliberate: `ServiceOverloadedError` declares
+  `Origin.capacity`, so `is_server_fault` (`origin is Origin.service`) is false for it, and shedding
+  load is designed behaviour rather than something worth paging for. The permit
   must be released on every path — a leak would shrink capacity on each shed until nothing was
   served, which is what `tests/test_load_shedding.py` exists to catch.
 - **The renderer guarantees no 5xx from caller input.** `_write_inline_files` maps layout errnos
@@ -91,8 +92,10 @@ The rules below are load-bearing — every one of them exists because breaking i
 - **Encode caller text through `_encode_utf8`.** JSON can carry lone surrogates, which have no UTF-8 encoding;
   in `data` values they are stripped by the `_TYPST_ESCAPES` table alongside the direction overrides. That table
   is the single statement of what is unsafe inside a Typst string literal — add escapes there, not to a branch.
-- **`status_is_server_fault` decides what counts as an incident**, and both the error handler and the renderer's
-  compile-failure logging use it. Do not re-derive the 4xx/5xx split.
+- **Each error class declares its own `Origin`, and that declaration decides what counts as an incident.**
+  `AppError.is_server_fault` is exactly `origin is Origin.service`, and both the error handler and the
+  renderer's compile-failure logging read `is_server_fault` off the instance. One declaration therefore
+  drives both the published `origin` field and the log level. Do not re-derive the 4xx/5xx split from status.
 - **The one signal a configured memory bound produces is the caller's fault; every other signal is ours.** Which
   signal that is depends on the configuration, so the rule is conditional and not a fixed set. Bounded by
   `PRELUM_MAX_RENDER_MEMORY_BYTES`, the allocation fails inside Typst and Rust aborts, so it is `SIGABRT` — and a
@@ -104,8 +107,8 @@ The rules below are load-bearing — every one of them exists because breaking i
   mistake. Unbounded, the kernel's OOM killer sends `SIGKILL`
   for the same runaway template, and `SIGABRT` means Typst aborted on its own. A caller provokes whichever applies
   on demand, so routing it to a 5xx would hand every caller a lever on the alert channel; routing the *other* one
-  to a 4xx hides a real incident, because `status_is_server_fault` is the only thing that raises the log to `error`
-  and so the only path to Sentry. Do not flatten this into an unconditional set of signals — it was that once, and
+  to a 4xx hides a real incident, because `is_server_fault` (an `Origin.service` declaration) is the only thing
+  that raises the log to `error` and so the only path to Sentry. Do not flatten this into an unconditional set of signals — it was that once, and
   it silently swallowed pod-level OOM kills.
 - **The memory limit's wrapper argv is load-bearing.** `prlimit`'s `--data` takes an *optional* argument, so
   `("--data", value)` is not equivalent to `f"--data={value}"`: split, getopt leaves the limit unset, `prlimit`
