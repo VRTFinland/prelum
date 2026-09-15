@@ -1,6 +1,8 @@
 import json
 from pathlib import Path
 
+import pytest
+
 from app.core.constraints import files_key_rules
 from app.core.errors import Origin, error_codes
 from scripts.export_constraints import export_constraints
@@ -231,7 +233,17 @@ def test_makefile_generates_the_error_codes_artefact_for_the_site():
 
 
 def test_the_generated_error_codes_artefact_is_not_committed():
-    """It is built by docs-build like its two siblings; a tracked copy would go stale in review."""
-    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+    """It is built by docs-build like its two siblings; a tracked copy would go stale in review.
+
+    Checked against a checkout only. `.dockerignore` keeps `.git` and `.gitignore` out of the build
+    context on purpose, and the builder copies a named list of paths, so inside the image this file
+    does not exist — the suite runs there too. The other repository-shape tests read files the
+    Dockerfile copies in (`Makefile`, `.github/workflows`); this one cannot, because excluding
+    version-control metadata from the image is the deliberate decision it would have to undo.
+    """
+    gitignore_path = ROOT / ".gitignore"
+    if not gitignore_path.exists():
+        pytest.skip("no .gitignore: running against the image rather than a checkout")
+    gitignore = gitignore_path.read_text(encoding="utf-8")
 
     assert "docs/api/error-codes.json" in gitignore
