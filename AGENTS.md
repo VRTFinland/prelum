@@ -44,6 +44,29 @@ and the report fonts, and a self-skipping test there reports green while compili
 - Detailed public contracts belong in `docs/`; keep `README.md` to the overview, quick start and
   links, and keep this file to engineering instructions and load-bearing invariants.
 
+## Comments and docstrings
+
+This codebase explains *why*, at length where the reason is not recoverable from the code. That
+licence is the reason the rules below are needed: prose that carries no reason is the cost of the
+prose that does, because it trains a reader to skim both.
+
+- Write what the code cannot say. A constraint that came from outside the file — a published
+  contract, an upstream library's behaviour, a limit an operator sets — belongs in a comment. What
+  the next three lines plainly do does not.
+- Say it once, where the decision lives. A rationale repeated at each site that depends on it is
+  one rationale to keep correct in several places; state it at the definition and point at that
+  name from elsewhere, if anywhere.
+- No `:param:` or `:return:` line that restates the signature. Keep one only when it adds what the
+  name and annotation cannot: a unit, what `None` means, an encoding, the empty case, or that the
+  value reaches a caller. Keep every `:raises:` — exceptions are not in the signature.
+- Cross-file pointers rot. Name a symbol rather than a file path and line. Naming a test is fine
+  where it tells a maintainer what will fail if they ignore the instruction — the module docstrings
+  under `scripts/` do this — but not as evidence for the claim above it.
+- Bug histories and hypothetical futures belong in the commit message. The comment states the rule
+  that now holds; `git log -S` finds the story if anyone needs it.
+- A docstring's first line says what the thing is for. If the paragraph below it restates the
+  assertions or the branches that follow, delete the paragraph.
+
 ## Inline rendering invariants
 
 `/v1/render` compiles a `source` supplied by the caller, so arbitrary caller input reaches the compiler.

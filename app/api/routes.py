@@ -152,9 +152,6 @@ async def constraints(
     response is a pure function of published constants and Settings: no body is read, no permit is
     taken and no subprocess runs, so it cannot be shed and cannot fail on caller input.
 
-    :param settings: Application settings supplying the deployment's limits.
-    :param _token: API token validation dependency.
-    :return: The published rules document with a limits object.
     """
     return ConstraintsResponse.model_validate(build_constraints(settings))
 
@@ -173,11 +170,6 @@ async def render(
     Concurrent renders are capped by a semaphore (PRELUM_MAX_CONCURRENT_RENDERS): each one forks a
     typst process, so without the cap a burst of requests exhausts the container rather than queueing.
 
-    :param request: The render request containing the inline template source, data, and options.
-    :param renderer: The Typst renderer instance.
-    :param semaphore: Semaphore for controlling concurrent render operations.
-    :param _token: API token validation dependency.
-    :return: A FastAPI Response object containing the rendered bytes with the appropriate content type and headers.
     :raises RenderTimeoutError: If the rendering process exceeds the configured timeout.
     :raises AppError: For known application-level rendering failures.
     :raises ServiceUnavailableError: For unexpected or unhandled errors during rendering.

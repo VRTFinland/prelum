@@ -165,10 +165,8 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "code": "invalid_request",
         "rule": OutputRuleId.multiple_pdf_a_standards.value,
     },
-    # Breaks multiple_pdf_a_standards and version_conflicts_with_standard at once, so it is the
-    # vector that makes rule_evaluation's promise falsifiable: the answer is the rule listed first,
-    # and a mirror applying them in the other order reports the other one while agreeing that the
-    # object is bad.
+    # Breaks two rules at once, which is what makes rule_evaluation falsifiable: a mirror applying
+    # them in the other order reports the other rule while agreeing that the object is bad.
     {
         "output": {"format": "pdf", "version": "1.4", "standards": ["a-2b", "a-3b"]},
         "accepted": False,
@@ -289,10 +287,8 @@ def output_rules() -> dict[str, Any]:
         "output_rules_version": OUTPUT_RULES_VERSION,
         "formats": [output_format.value for output_format in OutputFormat],
         "pdf": {
-            # Which formats each block governs. Without them a mirror decides the image rules by
-            # exclusion — "not pdf, therefore image" — which is the defect pdf_a_4_standards was
-            # added to avoid one level down, and which misapplies these rules to any format added
-            # later. tests/test_output_rules.py drives its mirror off exactly these two lists.
+            # Which formats each block governs, so that a mirror decides by reading rather than by
+            # excluding — the same reason pdf_a_4_standards is published one level down.
             "formats": sorted(output_format.value for output_format in PDF_OUTPUT_FORMATS),
             "versions": [version.value for version in PdfVersion],
             "standards": [standard.value for standard in PdfStandard],

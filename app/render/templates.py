@@ -45,7 +45,6 @@ def ensure_temp_root_fits(temp_root: Path) -> None:
     operator who redirects the scratch space learns of it before the first request rather than as
     a 503 after it.
 
-    :param temp_root: The directory renders create their temporary projects in.
     :raises RuntimeError: If the deepest path a render builds would not fit the reserve.
     """
     ensure_project_root_fits(temp_root / _RENDER_ROOT_SUFFIX)
@@ -100,9 +99,9 @@ def validate_inline_file_key(key: str) -> str:
     """
     Validate one caller-supplied files key, which the renderer turns into a file path.
 
-    An accepted key comes back unchanged and is safe to append to the render project root; each
-    check below says what it rules out. POSIX semantics are applied on every platform, so the
-    guarantee is a property of this function rather than of the deployment target.
+    An accepted key comes back unchanged and is safe to append to the render project root. POSIX
+    semantics are applied on every platform, so the guarantee is a property of this function rather
+    than of the deployment target.
 
     There is no rule protecting the inline entry point: INLINE_TEMPLATE_FILENAME holds a character
     outside SAFE_FILENAME_CHARS, so the character check below already makes every spelling of it
@@ -110,8 +109,7 @@ def validate_inline_file_key(key: str) -> str:
 
     See ``validate_inline_file_keys`` for the rules that need the whole set of keys.
 
-    :param key: The relative file path to validate (e.g. 'lib/utils.typ').
-    :return: The validated key unchanged.
+    :param key: A relative path such as 'lib/utils.typ'.
     :raises InvalidTemplatePathError: If the key is invalid or unsafe.
     """
     # Both guards are redundant against the checks further down; they exist for a better message.
@@ -162,7 +160,6 @@ def ensure_key_count_fits(count: int) -> None:
     Pydantic has validated a single entry: the cap is the one rule that needs nothing but the
     mapping's size, and applying it late is what let an oversized mapping be fully validated first.
 
-    :param count: The number of keys the caller sent.
     :raises InvalidFileDataError: If the count exceeds MAX_INLINE_FILE_KEYS.
     """
     if count > MAX_INLINE_FILE_KEYS:
@@ -181,8 +178,7 @@ def validate_inline_file_keys(keys: Iterable[str]) -> list[str]:
     something that depends on the host, when they differ only in case. Both would otherwise
     surface as a failed write rather than a rejected request.
 
-    :param keys: The files keys, in request order.
-    :return: The validated keys as a list, unchanged and in order.
+    :param keys: In request order, which the returned list preserves.
     :raises InvalidTemplatePathError: If an individual key is invalid.
     :raises InvalidFileDataError: If there are more than MAX_INLINE_FILE_KEYS keys or two keys conflict.
     """

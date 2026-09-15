@@ -144,17 +144,13 @@ def _mirror(document: dict[str, Any], output: dict[str, Any]) -> str | None:
     Decide one `output` object using nothing but the published document.
 
     This is the client the artefact exists for, written the way a caller would have to write it: the
-    tables come from `pdf`, the grammar from `page_selection`, the formats each block governs from
-    `pdf.formats` and `image.formats`, and — the part that makes `rule_evaluation` a promise rather
-    than prose — the rules are applied by walking `document["rules"]` in the order it lists them.
-    Reorder RULES and this mirror's answers move with it, which is what
-    `test_the_published_rule_order_is_the_order_the_mirror_applies` pins. Nothing is imported from
-    app.models, so a rule that reaches the validators without reaching the document fails here
-    rather than in a caller's deployment.
+    tables come from `pdf`, the grammar from `page_selection`, the formats from `pdf.formats` and
+    `image.formats`, and the rules are applied by walking `document["rules"]` in the published
+    order. Nothing is imported from app.models, so a rule that reaches the validators without
+    reaching the document fails here rather than in a caller's deployment.
 
     The literals it does spell — `ua-1`, `2.0` — are named by the rules that use them, the same way
-    the files-key set rules are implemented from their descriptions. What a mirror cannot derive is
-    published as data, and that is what this proves.
+    the files-key set rules are implemented from their descriptions.
     """
     selection = document["page_selection"]
     pdf_a_version: dict[str, str] = document["pdf"]["pdf_a_version"]
@@ -167,9 +163,8 @@ def _mirror(document: dict[str, Any], output: dict[str, Any]) -> str | None:
     pdf_a = [standard for standard in standards if standard in pdf_a_version]
     version: str | None = output.get("version")
 
-    # One predicate per rule id, each deciding on its own. Nothing here assumes an earlier rule has
-    # already run: order is supplied entirely by the loop below, so it is the document that decides
-    # which of two broken rules is reported.
+    # One predicate per rule id, none assuming an earlier rule has run: the loop below is where the
+    # order comes from, so the document decides which of two broken rules is reported.
     checks: dict[str, Callable[[], bool]] = {
         "page_selection_too_long": lambda: pages is not None and len(pages) > selection["max_length"],
         "page_selection_too_many_segments": lambda: len(parts) > selection["max_selections"],
@@ -228,10 +223,7 @@ def test_every_format_is_claimed_by_exactly_one_block():
     """
     A format governed by neither block, or by both, is one a mirror decides by guessing.
 
-    `image` states which formats it governs so that a mirror need not read "not pdf, therefore
-    image". That only holds while the two lists between them cover `formats` without overlapping —
-    a fourth entry in OutputFormat claimed by neither fails here rather than in a caller's mirror,
-    which would silently apply the image rules to it.
+    Publishing the two lists only removes the guess while they cover `formats` without overlapping.
     """
     document = output_rules()
     pdf_formats = set(document["pdf"]["formats"])
@@ -245,11 +237,8 @@ def test_the_published_rule_order_is_the_order_the_mirror_applies():
     """
     `rule_evaluation` promises the listed order is the applied one; this is what holds it.
 
-    The mirror walks `rules` as published, so moving a rule in output_rules.py moves the answer an
-    object breaking two of them gets. Without this, `_mirror` could hardcode an order that happens
-    to match today and agree with every vector while the document said something else — and a
-    caller implementing the published order would disagree with the service, each convinced the
-    other had the rule wrong.
+    Without it the mirror could hardcode an order matching today's and agree with every vector
+    while the document said something else, leaving a caller who followed the document wrong.
     """
     document = output_rules()
     breaks_two = {"format": "pdf", "version": "1.4", "standards": ["a-2b", "a-3b"]}
