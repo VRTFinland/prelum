@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, LiteralString, cast
+from typing import Annotated, ClassVar, Literal, LiteralString, NoReturn, cast
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
@@ -116,6 +116,95 @@ class ConstraintLimits(BaseModel):
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
+class OutputRule(BaseModel):
+    """One output-option rule that needs more than one field to decide, named by its stable id."""
+
+    id: str
+    error_code: str
+    description: str
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class OutputConformanceVector(BaseModel):
+    """An executable accepted or rejected `output` object for an output-rules mirror."""
+
+    output: dict[str, object]
+    accepted: bool
+    code: str | None = None
+    # Absent where a field-level rule refused the object: the OpenAPI schema states those, and
+    # Pydantic's own error type already tells them apart, so they carry no id of ours.
+    rule: str | None = None
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PngOutputRules(BaseModel):
+    """The bounds PNG output applies to `ppi`, and the value it uses when none is given."""
+
+    min_ppi: int
+    max_ppi: int
+    default_ppi: int
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class ImageOutputRules(BaseModel):
+    """What PNG and SVG output accept beyond the fields every output shares."""
+
+    # Which `format` values this block governs. Stated rather than left to be inferred from "not
+    # pdf": a mirror deciding by exclusion applies these rules to any format added later.
+    formats: list[str]
+    archives: list[str]
+    min_page: int
+    png: PngOutputRules
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PdfOutputRules(BaseModel):
+    """The PDF vocabulary, with the two lookup tables a mirror would otherwise transcribe."""
+
+    # Which `format` values this block governs, for the same reason as `image.formats`.
+    formats: list[str]
+    versions: list[str]
+    standards: list[str]
+    max_standards: int
+    pdf_a_version: dict[str, str]
+    tagged_standards: list[str]
+    pdf_a_4_standards: list[str]
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PageSelectionRules(BaseModel):
+    """The `pages` grammar, shared by PDF output and an image archive."""
+
+    max_length: int
+    max_length_unit: str
+    max_selections: int
+    selection_pattern: str
+    selection_pattern_flavour: Literal["pcre"]
+    selection_pattern_matches_whole_selection: bool
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class OutputRulesDocument(BaseModel):
+    """The deployment-independent output-option contract, also exported as output-rules.json."""
+
+    output_rules_version: int
+    formats: list[str]
+    pdf: PdfOutputRules
+    image: ImageOutputRules
+    page_selection: PageSelectionRules
+    rule_evaluation: str
+    rules: list[OutputRule]
+    conformance_vectors: list[OutputConformanceVector]
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
 class ConstraintsResponse(BaseModel):
     """The complete client contract returned by ``GET /v1/constraints``."""
 
@@ -133,8 +222,17 @@ class ConstraintsResponse(BaseModel):
     set_rules: list[ConstraintSetRule]
     conformance_vectors: list[ConstraintConformanceVector]
     limits: ConstraintLimits
+    # Nested rather than merged into this document's own fields, and carrying its own version
+    # counter: the two rule sets change at different rates, so a shared `rules_version` would send
+    # a caller back through the key rules because a PDF standard was added. One fetch still answers
+    # both, which merging was the only other way to achieve.
+    output_rules: OutputRulesDocument
 
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+# Named so the published document can list the archive formats without a second spelling of "zip".
+type ArchiveFormat = Literal["zip"]
 
 
 class _RenderOutputBase(BaseModel):
@@ -143,11 +241,29 @@ class _RenderOutputBase(BaseModel):
     model_config: ClassVar[ConfigDict] = _STRICT
 
 
-_PAGE_RANGE = re.compile(r"[1-9][0-9]*(?:-(?:[1-9][0-9]*)?)?")
-_MAX_PAGE_SELECTION_LENGTH = 256
-_MAX_PAGE_SELECTION_SEGMENTS = 64
-_TAGGED_PDF_STANDARDS = {PdfStandard.a_1a, PdfStandard.a_2a, PdfStandard.a_3a, PdfStandard.ua_1}
-_PDF_A_VERSION = {
+# Public because app/core/output_rules.py publishes each of them, and a limit with two spellings is
+# a limit that can drift: the module that restates the rules must read the same object this module
+# enforces them from. The one exception is the compiled expression below, which is the pattern's
+# private form; the source string is what a caller in another language can use.
+
+# Applied to one comma-separated selection with fullmatch, so it is anchored at both ends by the
+# call rather than by the expression. A mirror that anchors with '^' and '$' instead accepts
+# '1\n', which Python's fullmatch does not — the conformance vectors carry that case.
+PAGE_SELECTION_PATTERN = r"[1-9][0-9]*(?:-(?:[1-9][0-9]*)?)?"
+MAX_PAGE_SELECTION_LENGTH = 256
+MAX_PAGE_SELECTION_SEGMENTS = 64
+# Field-level bounds. They live here rather than inline in Field(...) for the same reason: the
+# published document states each one, and a literal repeated in two files is the drift this whole
+# artefact exists to prevent.
+MAX_PDF_STANDARDS = 2
+MIN_IMAGE_PAGE = 1
+MIN_PNG_PPI = 1
+MAX_PNG_PPI = 300
+DEFAULT_PNG_PPI = 144
+
+_PAGE_RANGE = re.compile(PAGE_SELECTION_PATTERN)
+TAGGED_PDF_STANDARDS = {PdfStandard.a_1a, PdfStandard.a_2a, PdfStandard.a_3a, PdfStandard.ua_1}
+PDF_A_VERSION = {
     PdfStandard.a_1b: PdfVersion.v1_4,
     PdfStandard.a_1a: PdfVersion.v1_4,
     PdfStandard.a_2b: PdfVersion.v1_7,
@@ -160,6 +276,47 @@ _PDF_A_VERSION = {
     PdfStandard.a_4f: PdfVersion.v2_0,
     PdfStandard.a_4e: PdfVersion.v2_0,
 }
+# The PDF/A-4 family, derived from the map rather than spelled a second time. ua-1 is incompatible
+# with exactly these three, and app/core/output_rules.py publishes the set so that a mirror can
+# apply the rule from data instead of inferring the family from how a standard's name begins.
+PDF_A_4_STANDARDS = frozenset(standard for standard in PDF_A_VERSION if standard.value.startswith("a-4"))
+
+
+class OutputRuleId(StrEnum):
+    """
+    The published id of every output-option rule this module enforces.
+
+    A rejection says only `invalid_request` at `body.output`, so until these ids existed the one
+    thing telling a broken rule from its neighbour was `msg` — prose, which docs/api/errors.md
+    reserves the right to reword, so a caller branching on it was transcribing our wording. The id
+    travels in `context.rule`, and app/core/output_rules.py publishes the same ids beside the
+    conformance vectors: a mirror can then assert *which* constraint fired, not merely that one did.
+    """
+
+    duplicate_standards = "duplicate_standards"
+    multiple_pdf_a_standards = "multiple_pdf_a_standards"
+    ua_1_with_pdf_a_4 = "ua_1_with_pdf_a_4"
+    version_conflicts_with_standard = "version_conflicts_with_standard"
+    ua_1_with_pdf_2_0 = "ua_1_with_pdf_2_0"
+    pages_with_tagged_standard = "pages_with_tagged_standard"
+    pages_requires_archive = "pages_requires_archive"
+    page_with_archive = "page_with_archive"
+    page_selection_too_long = "page_selection_too_long"
+    page_selection_too_many_segments = "page_selection_too_many_segments"
+    page_selection_malformed = "page_selection_malformed"
+    page_range_end_precedes_start = "page_range_end_precedes_start"
+
+
+def _reject(rule: OutputRuleId, message: str) -> NoReturn:
+    """
+    Fail validation with the id of the rule that fired carried beside its prose.
+
+    The error type stays `value_error`, which is exactly what a bare ValueError raised from a
+    validator produces: `errors[].type` is published, and an existing field changing meaning needs a
+    new API version. The id therefore arrives as a new context key instead, which app/main.py lifts
+    out of Pydantic's ctx onto the problem body.
+    """
+    raise PydanticCustomError("value_error", "{message}", {"message": message, "rule": rule.value})
 
 
 @dataclass(frozen=True, slots=True)
@@ -179,14 +336,23 @@ class PageSelectionLimitError(ValueError):
 
 
 def parse_page_selection(value: str) -> tuple[PageRange, ...]:
-    if len(value) > _MAX_PAGE_SELECTION_LENGTH:
-        raise ValueError(f"pages must not exceed {_MAX_PAGE_SELECTION_LENGTH} characters")
+    if len(value) > MAX_PAGE_SELECTION_LENGTH:
+        _reject(OutputRuleId.page_selection_too_long, f"pages must not exceed {MAX_PAGE_SELECTION_LENGTH} characters")
 
     selections = value.split(",")
-    if len(selections) > _MAX_PAGE_SELECTION_SEGMENTS or any(
-        _PAGE_RANGE.fullmatch(selection) is None for selection in selections
-    ):
-        raise ValueError("pages must be a comma-separated list of positive pages or ranges")
+    # Counted before the selections are matched, rather than beside them: the count is the cheap
+    # half of what used to be one condition, and the two answers are now separate published rules,
+    # so a value breaking both has to name the one that bounds the work the other would do.
+    if len(selections) > MAX_PAGE_SELECTION_SEGMENTS:
+        _reject(
+            OutputRuleId.page_selection_too_many_segments,
+            f"pages must not exceed {MAX_PAGE_SELECTION_SEGMENTS} comma-separated selections",
+        )
+    if any(_PAGE_RANGE.fullmatch(selection) is None for selection in selections):
+        _reject(
+            OutputRuleId.page_selection_malformed,
+            "pages must be a comma-separated list of positive pages or ranges",
+        )
 
     ranges: list[PageRange] = []
     for selection in selections:
@@ -199,7 +365,7 @@ def parse_page_selection(value: str) -> tuple[PageRange, ...]:
         start = int(start_text)
         end = int(end_text) if end_text else None
         if end is not None and end < start:
-            raise ValueError("page range end must not precede its start")
+            _reject(OutputRuleId.page_range_end_precedes_start, "page range end must not precede its start")
         ranges.append(PageRange(start, end))
 
     return tuple(ranges)
@@ -250,47 +416,53 @@ type PageSelection = Annotated[str, AfterValidator(_validate_page_selection)]
 class PdfOutput(_RenderOutputBase):
     format: Literal[OutputFormat.pdf] = OutputFormat.pdf
     version: PdfVersion | None = None
-    standards: list[PdfStandard] = Field(default_factory=list, max_length=2)
+    standards: list[PdfStandard] = Field(default_factory=list, max_length=MAX_PDF_STANDARDS)
     pages: PageSelection | None = None
 
     @model_validator(mode="after")
     def validate_pdf_options(self) -> PdfOutput:
         if len(set(self.standards)) != len(self.standards):
-            raise ValueError("PDF standards must not contain duplicates")
+            _reject(OutputRuleId.duplicate_standards, "PDF standards must not contain duplicates")
 
-        pdf_a = [standard for standard in self.standards if standard in _PDF_A_VERSION]
+        pdf_a = [standard for standard in self.standards if standard in PDF_A_VERSION]
         if len(pdf_a) > 1:
-            raise ValueError("Only one PDF/A standard can be selected")
-        if PdfStandard.ua_1 in self.standards and any(standard.value.startswith("a-4") for standard in pdf_a):
-            raise ValueError("PDF/UA-1 is incompatible with PDF/A-4")
+            _reject(OutputRuleId.multiple_pdf_a_standards, "Only one PDF/A standard can be selected")
+        if PdfStandard.ua_1 in self.standards and PDF_A_4_STANDARDS.intersection(pdf_a):
+            _reject(OutputRuleId.ua_1_with_pdf_a_4, "PDF/UA-1 is incompatible with PDF/A-4")
 
-        if self.version is not None and pdf_a and self.version != _PDF_A_VERSION[pdf_a[0]]:
-            raise ValueError(f"{pdf_a[0].value} requires PDF version {_PDF_A_VERSION[pdf_a[0]].value}")
+        if self.version is not None and pdf_a and self.version != PDF_A_VERSION[pdf_a[0]]:
+            _reject(
+                OutputRuleId.version_conflicts_with_standard,
+                f"{pdf_a[0].value} requires PDF version {PDF_A_VERSION[pdf_a[0]].value}",
+            )
         if self.version == PdfVersion.v2_0 and PdfStandard.ua_1 in self.standards:
-            raise ValueError("PDF/UA-1 is incompatible with PDF 2.0")
-        if self.pages is not None and _TAGGED_PDF_STANDARDS.intersection(self.standards):
-            raise ValueError("PDF page selection cannot be combined with a standard that requires tagging")
+            _reject(OutputRuleId.ua_1_with_pdf_2_0, "PDF/UA-1 is incompatible with PDF 2.0")
+        if self.pages is not None and TAGGED_PDF_STANDARDS.intersection(self.standards):
+            _reject(
+                OutputRuleId.pages_with_tagged_standard,
+                "PDF page selection cannot be combined with a standard that requires tagging",
+            )
 
         return self
 
 
 class _ImageOutputBase(_RenderOutputBase):
-    page: int | None = Field(default=None, ge=1, strict=True)
-    archive: Literal["zip"] | None = None
+    page: int | None = Field(default=None, ge=MIN_IMAGE_PAGE, strict=True)
+    archive: ArchiveFormat | None = None
     pages: PageSelection | None = None
 
     @model_validator(mode="after")
     def validate_image_options(self) -> _ImageOutputBase:
         if self.archive is None and self.pages is not None:
-            raise ValueError("pages requires archive 'zip'")
+            _reject(OutputRuleId.pages_requires_archive, "pages requires archive 'zip'")
         if self.archive is not None and self.page is not None:
-            raise ValueError("page cannot be combined with an archive")
+            _reject(OutputRuleId.page_with_archive, "page cannot be combined with an archive")
         return self
 
 
 class PngOutput(_ImageOutputBase):
     format: Literal[OutputFormat.png] = OutputFormat.png
-    ppi: int = Field(default=144, ge=1, le=300, strict=True)
+    ppi: int = Field(default=DEFAULT_PNG_PPI, ge=MIN_PNG_PPI, le=MAX_PNG_PPI, strict=True)
 
 
 class SvgOutput(_ImageOutputBase):
@@ -298,6 +470,23 @@ class SvgOutput(_ImageOutputBase):
 
 
 type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discriminator="format")]
+
+# Which model validates each `format`, and so which rules apply to it. app/core/output_rules.py
+# publishes both sets, because a mirror that reads "not pdf, therefore image" is deciding by
+# exclusion: add a fourth format that is neither, and it silently applies the image rules to it.
+# Derived from the class hierarchy rather than listed a second time, and every member of
+# OutputFormat must be claimed by exactly one set — tests/test_output_rules.py asserts it.
+OUTPUT_MODELS: dict[OutputFormat, type[_RenderOutputBase]] = {
+    OutputFormat.pdf: PdfOutput,
+    OutputFormat.png: PngOutput,
+    OutputFormat.svg: SvgOutput,
+}
+PDF_OUTPUT_FORMATS = frozenset(
+    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, PdfOutput)
+)
+IMAGE_OUTPUT_FORMATS = frozenset(
+    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, _ImageOutputBase)
+)
 
 
 def _as_validation_error(check: Callable[[], object]) -> None:

@@ -10,6 +10,7 @@ that mirrors it rejects keys the service accepts.
 from typing import Any
 
 from app.core.config import Settings
+from app.core.output_rules import output_rules
 from app.render.templates import (
     INLINE_FILE_KEY_PATTERN,
     MAX_INLINE_FILE_KEYS,
@@ -156,9 +157,13 @@ def build_constraints(settings: Settings) -> dict[str, Any]:
     ``max_keys`` is structural and ``max_inline_files`` is configurable, so the effective cap is the
     smaller of the two. It is stated outright because a caller that mirrors only one of them has the
     contract wrong in one direction or the other.
+
+    The output rules are nested whole rather than merged, so their version counter stays their own;
+    everything a caller needs to validate a request before dispatch then arrives in one fetch.
     """
     return {
         **files_key_rules(),
+        "output_rules": output_rules(),
         "limits": {
             "effective_max_files": min(MAX_INLINE_FILE_KEYS, settings.max_inline_files),
             "max_inline_files": settings.max_inline_files,

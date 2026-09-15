@@ -88,6 +88,91 @@ def test_v1_rejects_an_unsupported_format_with_its_published_code():
     assert response.json()["code"] == "unsupported_format"
 
 
+@pytest.mark.parametrize(
+    ("output", "rule"),
+    [
+        ({"format": "pdf", "standards": ["a-2b", "a-2b"]}, "duplicate_standards"),
+        ({"format": "pdf", "standards": ["a-2b", "a-3b"]}, "multiple_pdf_a_standards"),
+        ({"format": "pdf", "standards": ["a-4", "ua-1"]}, "ua_1_with_pdf_a_4"),
+        ({"format": "pdf", "version": "1.4", "standards": ["a-2b"]}, "version_conflicts_with_standard"),
+        ({"format": "pdf", "version": "2.0", "standards": ["ua-1"]}, "ua_1_with_pdf_2_0"),
+        ({"format": "pdf", "standards": ["a-1a"], "pages": "1-2"}, "pages_with_tagged_standard"),
+        ({"format": "png", "pages": "1-2"}, "pages_requires_archive"),
+        ({"format": "png", "archive": "zip", "page": 1}, "page_with_archive"),
+        ({"format": "pdf", "pages": "1" + ",1" * 200}, "page_selection_too_long"),
+        ({"format": "pdf", "pages": ",".join(["1"] * 65)}, "page_selection_too_many_segments"),
+        ({"format": "pdf", "pages": "1-a"}, "page_selection_malformed"),
+        ({"format": "pdf", "pages": "3-2"}, "page_range_end_precedes_start"),
+    ],
+)
+def test_v1_names_the_output_rule_that_rejected_the_request(output: dict[str, object], rule: str):
+    """
+    Every one of these answers `invalid_request` at the same `loc`, so `rule` is the only difference.
+
+    Without it a caller distinguishing "you asked for two PDF/A profiles" from "that version
+    contradicts your profile" has nothing but `msg`, which docs/api/errors.md reserves the right to
+    reword. This is the assertion an SDK's own conformance run makes.
+    """
+    response = client.post("/v1/render", json={"source": '#text("hello")', "output": output}, headers=TOKEN)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["code"] == "invalid_request"
+    assert body["context"]["rule"] == rule
+
+
+def test_v1_output_rule_rejection_keeps_the_published_validation_error_shape():
+    """
+    The id had to arrive as a new context key, not as a new `errors[].type`.
+
+    `type` is published, and an existing field changing meaning needs a new API version — so a
+    client pinned to `value_error` must keep matching after the ids were introduced.
+    """
+    response = client.post(
+        "/v1/render",
+        json={"source": '#text("hello")', "output": {"format": "png", "pages": "1-2"}},
+        headers=TOKEN,
+    )
+
+    body = response.json()
+    error = body["context"]["errors"][0]
+    assert error["type"] == "value_error"
+    assert error["loc"] == ["body", "output", "png"]
+    assert set(body["context"]) == {"errors", "rule"}
+
+
+@pytest.mark.parametrize(
+    ("payload", "expected_detail_prefix"),
+    [
+        ({"output": {"format": "png", "pages": "1-2"}}, "source:"),
+        (
+            {
+                "source": '#text("hello")',
+                "output": {"format": "pdf", "standards": ["a-1b", "a-2b", "ua-1"], "pages": "1-a"},
+            },
+            "output.pdf.standards:",
+        ),
+    ],
+)
+def test_v1_reports_no_rule_for_a_failure_the_rules_do_not_name(
+    payload: dict[str, object], expected_detail_prefix: str
+):
+    """
+    `rule` describes the failure `detail` reports, never whichever error happens to carry an id.
+
+    Both of these break an output rule *and* something with no id — a missing source, and three
+    standards where two are allowed. Lifting the id from any error that had one produced
+    "source: Field required" beside a rule about the page selection, so a client following the
+    documentation's advice to branch on `rule` reported a cause the response was not about.
+    """
+    response = client.post("/v1/render", json=payload, headers=TOKEN)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["detail"].startswith(expected_detail_prefix)
+    assert "rule" not in body["context"]
+
+
 def test_render_request_requires_non_empty_source():
     with pytest.raises(ValidationError):
         RenderRequest(source="")

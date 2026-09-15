@@ -63,7 +63,7 @@ mounts and signature verification, see [Docker and releases](operations/docker.m
 | Endpoint | What it is for | Authentication |
 | --- | --- | --- |
 | `POST /v1/render` | Render a caller-supplied Typst project | API token |
-| `GET /v1/constraints` | Read this deployment's file and size limits | API token |
+| `GET /v1/constraints` | Read the published rules and this deployment's limits | API token |
 | `GET /health` | Check that the process is alive | none |
 | `GET /metrics` | Collect Prometheus metrics | none |
 | `GET /openapi.json` | Download the generated API contract | none |

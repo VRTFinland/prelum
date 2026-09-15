@@ -138,4 +138,7 @@ If the request is invalid, Prelum returns `application/problem+json`. Use its st
 
 Request objects are strict. Unknown fields, misspellings and options belonging to another output
 format are rejected rather than silently ignored. The render endpoint validates every request;
-client-side checks using `/v1/constraints` are an optional way to provide earlier feedback.
+client-side checks using `/v1/constraints` are an optional way to provide earlier feedback. Both
+halves of that check are published: the key rules in
+[Constraints and files-key rules](files-key-rules.md), and the `output` rules with their conformance
+vectors in [Choose an output format](output-formats.md).

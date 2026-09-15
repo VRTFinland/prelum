@@ -233,6 +233,10 @@ The static [`files-key-rules.json`](files-key-rules.json) file contains the same
 that cannot contact a running service. It does not contain `limits`, because a static document
 cannot describe an individual deployment.
 
+The response also carries `output_rules`, the matching contract for the `output` object, under its
+own version counter. [Choose an output format](output-formats.md) describes it, and it is published
+statically as [`output-rules.json`](output-rules.json).
+
 ## Reference: per-key shape
 
 Every per-key rule is published twice: once as data, and once folded into `key_pattern` for the

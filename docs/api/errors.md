@@ -69,20 +69,20 @@ text before shortening, so these fields can always be encoded as UTF-8.
 | `size` | integer | A measured size in bytes |
 | `count` | integer | A measured or requested number of things |
 | `key` | string | One `files` key, complete and exactly as sent |
-| `rule` | string | The `id` of the whole-set files-key rule that rejected the request, as published by `GET /v1/constraints` |
+| `rule` | string | The `id` of the rule behind the failure `detail` reports — a whole-set files-key rule or an output-option rule — as published by `GET /v1/constraints`. Branch on it rather than on `detail`. A request breaking an identified rule *and* something the rules do not name reports the latter, and carries no `rule` until it is fixed |
 | `path` | array | Where a value sits in `data`: object keys as strings, array indices as integers. String segments longer than 80 characters are shortened with `…` |
 | `subject` | string | `key` or `value`: which string at `path` is at fault. An oversized object key is its own last path segment, so the path alone cannot say |
 | `declared_size` | integer | The `Content-Length` the caller sent; not a measurement |
 | `timeout_secs` | integer | The configured render timeout in seconds |
 | `retry_after` | integer | Seconds to wait before retrying, equal to the `Retry-After` header |
-| `errors` | array | Request validation errors as `{loc, msg, type}`, at most 20 of them. `loc` is shortened like `path`: string segments over 80 characters end in `…`, array indices stay integers. `msg` is prose that may quote the offending value, and is shortened the same way past 200 characters |
+| `errors` | array | Request validation errors as `{loc, msg, type}`, at most 20 of them. `loc` is shortened like `path`: string segments over 80 characters end in `…`, array indices stay integers. `msg` is prose that may quote the offending value, and is shortened the same way past 200 characters. Like `detail`, it may be reworded — including its leading words — so branch on `type`, or on `context.rule` where one is given |
 | `errors_total` | integer | How many validation errors there were, present only when `errors` holds fewer than that |
 
 ## Codes
 
 | Status | `code` | `origin` | `context` | Cause |
 | ---: | --- | --- | --- | --- |
-| 400 | `invalid_request` | `request` | `errors`, absent when the body could not be parsed at all | Missing, malformed, unknown or format-inappropriate request field, or a body no JSON parser accepts |
+| 400 | `invalid_request` | `request` | `errors`, absent when the body could not be parsed at all; `rule` when an output-option rule rejected it | Missing, malformed, unknown or format-inappropriate request field, or a body no JSON parser accepts |
 | 400 | `unsupported_format` | `request` | `errors` | `format` outside `pdf`, `svg` and `png` |
 | 400 | `invalid_template_path` | `request` | `errors` | Unsafe, non-normalised or otherwise invalid `files` key |
 | 400 | `invalid_file_data` | `request` | `key` or `count` + `limit`, `rule` when a whole-set rule rejected it, and `errors` only when validation raised it (see below) | Malformed base64, excessive or colliding entries, or non-UTF-8 text |

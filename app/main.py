@@ -312,6 +312,18 @@ def create_app() -> FastAPI:
         ):
             error_class = UnsupportedFormatError
 
+        # The one error `detail`, `code` and `rule` all describe. `code` follows the classified
+        # files-key error wherever it sits, so that error — not errors[0] — is what the other two
+        # are read from as well; with nothing classified, the first failure answers for all three.
+        # Picking the three from different errors is what produced "source: Field required" beside
+        # a rule naming the output option, and a client doing what the documentation says (branch
+        # on `rule`, not on `detail`) then reported the wrong cause. Today the two cannot even
+        # coexist — the files-key checks run in RenderRequest's model validators, which Pydantic
+        # skips once a field such as `output` has failed — but that is an accident of where the
+        # checks happen to live, and moving one into a field validator on `files` would bring the
+        # mismatch straight back. Reading all three from one error does not depend on it.
+        reported = classified[0] if classified is not None else (errors[0] if errors else None)
+
         context: dict[str, object] = {"errors": published_errors}
         if len(errors) > _MAX_PUBLISHED_ERRORS:
             context["errors_total"] = len(errors)
@@ -320,11 +332,20 @@ def create_app() -> FastAPI:
             # "message" is the prose already in msg.
             lifted = cast(dict[str, object], classified[0].get("ctx", {}))
             context.update({key: value for key, value in lifted.items() if key != "message"})
+        # An output-option rule keeps the `value_error` type every other validator failure has, so
+        # `loc`, `type` and `code` are the same whichever of them fired: without the id, the only
+        # thing separating them is `msg`, which is prose a caller may not branch on. The id is
+        # therefore published, and past _MAX_PUBLISHED_ERRORS it is the only trace of the rule left
+        # — the named error need not appear in `errors` at all. A rule carried by some other error
+        # is dropped rather than reported: the caller has not been told about that failure yet.
+        rule = cast(dict[str, object], reported.get("ctx", {})).get("rule") if reported is not None else None
+        if isinstance(rule, str):
+            context["rule"] = rule
 
         # Validation errors carry the raised exception in ctx; encode at any depth so the response
         # body cannot fail to serialise.
         error = error_class(
-            _validation_detail(errors[0]) if errors else "Request validation failed",
+            _validation_detail(reported) if reported is not None else "Request validation failed",
             context=cast(dict[str, object], jsonable_encoder(context, custom_encoder={Exception: str})),
         )
         return error.to_response(request)

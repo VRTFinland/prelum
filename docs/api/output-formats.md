@@ -94,3 +94,86 @@ rejects the request rather than returning a partial archive when the document ha
 
 Both the uncompressed total and the completed ZIP must fit `PRELUM_MAX_OUTPUT_BYTES`. ZIP responses
 use `application/zip`, `Content-Disposition: attachment` and `Cache-Control: no-store`.
+
+## Validate the options before you send them
+
+Everything above is also published as data, so a client can refuse a bad `output` object without a
+round trip — and prove its check agrees with the service instead of transcribing this page.
+
+Two places carry the same document: `output_rules` in the response of
+[`GET /v1/constraints`](files-key-rules.md), and the static
+[`output-rules.json`](output-rules.json) for tools that run without a token. Nothing in it depends
+on the deployment, so the two never disagree.
+
+`output_rules_version` rises whenever a published output rule changes. It is separate from the
+`rules_version` covering the files-key rules: the two contracts change at different rates, and one
+counter would send you back through the key rules because a PDF standard was added.
+
+| Field | What it carries |
+| --- | --- |
+| `formats` | The values `format` accepts |
+| `pdf.formats`, `image.formats` | Which `format` values each block of rules governs. Between them they cover `formats`, so a client never has to read "not `pdf`, therefore an image" — a guess that would misapply the image rules to any format added later |
+| `pdf.versions`, `pdf.standards` | The values `version` and `standards` accept |
+| `pdf.max_standards` | How many entries `standards` may hold |
+| `pdf.pdf_a_version` | Which PDF version each PDF/A standard requires. A standard absent from this map is not a PDF/A profile — which is how `ua-1` is the one that may accompany one |
+| `pdf.tagged_standards` | The standards that require tagging, and so cannot be combined with `pages` |
+| `pdf.pdf_a_4_standards` | The PDF/A-4 family, which `ua-1` is incompatible with |
+| `image.archives`, `image.min_page` | What `archive` accepts, and the lowest `page` |
+| `image.png` | `min_ppi`, `max_ppi` and the `default_ppi` used when `ppi` is omitted |
+| `page_selection` | The `pages` grammar: `max_length` with the `max_length_unit` it counts, `max_selections`, and `selection_pattern`, which each comma-separated selection must match in full |
+| `rules` | The rules that need more than one field to decide, each with a stable `id` |
+| `conformance_vectors` | Executable examples — see below |
+
+## Which rule rejected the request
+
+Every rule in `rules` answers [`invalid_request`](errors.md) at the same place in the body, so the
+response carries the rule's `id` in `context.rule`. Branch on that rather than on `detail`, which is
+prose and may be reworded.
+
+`rule` always names the failure `detail` reports. A request that breaks one of these rules and also
+something they do not name — a missing `source`, say — reports that instead and carries no `rule`
+until it is fixed.
+
+| `id` | The request is refused when |
+| --- | --- |
+| `page_selection_too_long` | `pages` is longer than `max_length` |
+| `page_selection_too_many_segments` | `pages` holds more than `max_selections` comma-separated selections |
+| `page_selection_malformed` | A selection does not match `selection_pattern` in full |
+| `page_range_end_precedes_start` | A closed range in `pages` ends before it starts |
+| `duplicate_standards` | `standards` names the same standard twice |
+| `multiple_pdf_a_standards` | More than one PDF/A standard is selected |
+| `ua_1_with_pdf_a_4` | `ua-1` is combined with `a-4`, `a-4f` or `a-4e` |
+| `version_conflicts_with_standard` | An explicit `version` is not the one the selected PDF/A standard requires. Omitting `version` is always accepted |
+| `ua_1_with_pdf_2_0` | `ua-1` is combined with an explicit `version` of `2.0` |
+| `pages_with_tagged_standard` | `pages` is combined with a standard that requires tagging |
+| `pages_requires_archive` | An image output uses `pages` without `archive` |
+| `page_with_archive` | An image output combines `page` with `archive` |
+
+The rules are listed in the order Prelum applies them, and `rule_evaluation` says so in the document
+itself. An object that breaks two of them is reported against the earlier one, so a client checking
+them in another order disagrees about which constraint you broke while agreeing that you broke one.
+
+The field-level rules are not in this list. An unknown field, a `ppi` outside its range or a
+`format` that does not exist is described by the [OpenAPI schema](openapi.md), and the validation
+error's own `type` already tells those apart.
+
+## Conformance vectors
+
+`conformance_vectors` holds accepted and rejected `output` objects with the answer Prelum gives:
+
+```json
+{
+  "output": { "format": "pdf", "version": "1.4", "standards": ["a-2b"] },
+  "accepted": false,
+  "code": "invalid_request",
+  "rule": "version_conflicts_with_standard"
+}
+```
+
+An accepted vector has no `code` or `rule`. A rejected one always carries `code`, and carries `rule`
+when one of the rules above refused it.
+
+Run them against your own validator in your own test suite. Prelum runs every one of them against
+the service on each build, and against a validator built from this document alone — so a vector that
+disagreed with the service would fail here rather than in your deployment. That is the whole point
+of publishing them: your check is tested against ours rather than copied from it.
