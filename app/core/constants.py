@@ -2,6 +2,14 @@
 
 from pathlib import Path
 
+# The version the service reports in its OpenAPI schema. Prelum is a virtual uv project — no
+# [build-system], `package = false` — so it is never installed as a distribution and
+# importlib.metadata cannot answer for it, and the runtime image carries neither pyproject.toml nor
+# uv.lock to read at startup. The number is therefore spelled here as well as in pyproject.toml,
+# which the release workflow checks the dispatched version against; tests/test_docs.py reads that
+# file and fails if the two drift, so a bump that misses one of them cannot reach main.
+VERSION = "1.1.0"
+
 # Safe characters allowed in filenames and template names.
 # Includes alphanumeric characters, dot, hyphen, and underscore.
 SAFE_FILENAME_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_")

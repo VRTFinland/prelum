@@ -1,4 +1,5 @@
 import json
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -18,6 +19,10 @@ PYPROJECT = ROOT / "pyproject.toml"
 ERRORS_DOC = ROOT / "docs" / "api" / "errors.md"
 
 
+def _pyproject_version() -> str:
+    return tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"]
+
+
 def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Path):
     destination = tmp_path / "openapi.json"
 
@@ -26,7 +31,11 @@ def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Pat
     schema = json.loads(destination.read_text(encoding="utf-8"))
     assert {"/health", "/v1/constraints", "/v1/render"} <= schema["paths"].keys()
     assert schema["info"]["title"] == "Prelum"
-    assert schema["info"]["version"] == "1.1.0"
+    # Read rather than spelled: the version the service serves must be the one pyproject.toml
+    # declares, because that is the file the release workflow checks the dispatched version
+    # against. A third literal here would only have to be bumped too, and a release whose image
+    # reported a different version than its tag would pass CI until someone noticed.
+    assert schema["info"]["version"] == _pyproject_version()
 
     security_schemes = schema["components"]["securitySchemes"]
     assert security_schemes == {
