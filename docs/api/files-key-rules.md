@@ -315,3 +315,8 @@ mirror from drifting.
 
 `rules_version` rises whenever any published rule changes. Pin it, and treat a change as a signal to
 re-run the vectors.
+
+The document itself may gain fields within the same API version, so parse it leniently: ignore
+members you do not recognise rather than rejecting the response. A strict validator generated from
+the schema would otherwise fail on an ordinary release. See
+[Fields may be added](errors.md#fields-may-be-added) for the rule and what it excludes.

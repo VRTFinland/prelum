@@ -47,9 +47,10 @@ output.
 ## Fields may be added
 
 Request objects are strict: an unknown field is a mistake and is rejected rather than ignored.
-Responses are the opposite. An error body may gain fields within the same API version, so a client
-must ignore the ones it does not recognise, and a validator that rejects unknown members will break
-on an ordinary release. The published schema says so — the problem body is declared open.
+Responses are the opposite. Any response body — an error, or the `/v1/constraints` document — may
+gain fields within the same API version, so a client must ignore the ones it does not recognise, and
+a validator that rejects unknown members will break on an ordinary release. The published schema
+says so in both directions: every response schema is declared open, every request schema closed.
 
 What will not change without a new API version: an existing field disappearing, changing type or
 changing meaning, an existing `code` answering a different status, or a documented `origin` value

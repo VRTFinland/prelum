@@ -45,6 +45,14 @@ class PdfStandard(StrEnum):
 # document with a 200 response.
 _STRICT = ConfigDict(extra="forbid", frozen=True)
 
+# For the models that describe a response. They stay strict where they are validated — an undeclared
+# key reaching one from inside this service is our bug, and failing there is how it stays visible —
+# but the schema they publish must not repeat that promise to a caller. `extra="forbid"` exports
+# `additionalProperties: false`, which says the body is final; a response may gain a field within the
+# same API version, as `origin` did, and a client is expected to ignore what it does not recognise.
+# The override states that openness in the published document without loosening validation here.
+_STRICT_OPEN_SCHEMA = ConfigDict(extra="forbid", frozen=True, json_schema_extra={"additionalProperties": True})
+
 
 class RenderFile(BaseModel):
     encoding: Literal["text", "base64"]
@@ -69,14 +77,7 @@ class Problem(BaseModel):
     instance: str
     context: dict[str, object]
 
-    # Not _STRICT, unlike every other model here. `extra="forbid"` publishes
-    # `additionalProperties: false`, which is the right promise for a request — an unknown field
-    # there is a caller's mistake and is rejected — but on a response it promises the body is
-    # final. `origin` was added to this body additively on the reasoning that a caller ignoring an
-    # unknown field is unaffected; a closed schema contradicts that and would oblige the next such
-    # field to wait for a new API version. `extra="allow"` states the openness outright rather than
-    # leaving it to the absence of a key.
-    model_config: ClassVar[ConfigDict] = ConfigDict(extra="allow", frozen=True)
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintSetRule(BaseModel):
@@ -86,7 +87,7 @@ class ConstraintSetRule(BaseModel):
     error_code: str
     description: str
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintConformanceVector(BaseModel):
@@ -97,7 +98,7 @@ class ConstraintConformanceVector(BaseModel):
     code: str | None = None
     rule: str | None = None
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintLimits(BaseModel):
@@ -112,7 +113,7 @@ class ConstraintLimits(BaseModel):
     max_output_bytes: int
     max_output_files: int
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintsResponse(BaseModel):
@@ -133,7 +134,7 @@ class ConstraintsResponse(BaseModel):
     conformance_vectors: list[ConstraintConformanceVector]
     limits: ConstraintLimits
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class _RenderOutputBase(BaseModel):

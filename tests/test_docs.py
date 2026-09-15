@@ -165,6 +165,26 @@ def test_the_published_problem_schema_stays_open_to_new_fields(tmp_path: Path):
     assert problem["additionalProperties"] is True
 
 
+def test_published_response_schemas_stay_open_and_request_schemas_stay_closed(tmp_path: Path):
+    """The openness is a property of the direction, not of a model.
+
+    A request may not carry a field this service does not know — that is a caller's mistake and is
+    rejected — so those schemas stay closed. A response may gain one within the same API version,
+    so those must not promise otherwise. Both halves are asserted here: widening a request schema
+    would silently drop the strictness `docs/api/render.md` promises.
+    """
+    destination = tmp_path / "openapi.json"
+
+    export_openapi(destination)
+
+    schemas = json.loads(destination.read_text(encoding="utf-8"))["components"]["schemas"]
+    responses = ["ConstraintsResponse", "ConstraintSetRule", "ConstraintConformanceVector", "ConstraintLimits"]
+    requests = ["RenderRequest", "RenderFile", "PdfOutput", "PngOutput", "SvgOutput"]
+
+    assert {name: schemas[name]["additionalProperties"] for name in responses} == dict.fromkeys(responses, True)
+    assert {name: schemas[name]["additionalProperties"] for name in requests} == dict.fromkeys(requests, False)
+
+
 def _documented_codes() -> dict[str, tuple[int, str]]:
     """Parse the Codes table into {code: (status, origin)}."""
     section = ERRORS_DOC.read_text(encoding="utf-8").split("## Codes", 1)[1]
