@@ -176,6 +176,7 @@ class PageSelectionRules(BaseModel):
     """The `pages` grammar, shared by PDF output and an image archive."""
 
     max_length: int
+    max_length_unit: str
     max_selections: int
     selection_pattern: str
     selection_pattern_flavour: Literal["pcre"]

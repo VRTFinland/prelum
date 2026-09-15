@@ -69,7 +69,7 @@ text before shortening, so these fields can always be encoded as UTF-8.
 | `size` | integer | A measured size in bytes |
 | `count` | integer | A measured or requested number of things |
 | `key` | string | One `files` key, complete and exactly as sent |
-| `rule` | string | The `id` of the rule that rejected the request — a whole-set files-key rule or an output-option rule — as published by `GET /v1/constraints`. Present whenever an identified rule fired, so a client can branch on the constraint rather than on `msg` |
+| `rule` | string | The `id` of the rule behind the failure `detail` reports — a whole-set files-key rule or an output-option rule — as published by `GET /v1/constraints`. Branch on it rather than on `detail`. A request breaking an identified rule *and* something the rules do not name reports the latter, and carries no `rule` until it is fixed |
 | `path` | array | Where a value sits in `data`: object keys as strings, array indices as integers. String segments longer than 80 characters are shortened with `…` |
 | `subject` | string | `key` or `value`: which string at `path` is at fault. An oversized object key is its own last path segment, so the path alone cannot say |
 | `declared_size` | integer | The `Content-Length` the caller sent; not a measurement |

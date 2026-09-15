@@ -50,7 +50,10 @@ RULES: list[dict[str, str]] = [
     {
         "id": OutputRuleId.page_selection_too_long.value,
         "error_code": "invalid_request",
-        "description": f"pages must not exceed max_length ({MAX_PAGE_SELECTION_LENGTH}) characters.",
+        "description": (
+            f"pages must not exceed max_length ({MAX_PAGE_SELECTION_LENGTH}) units of "
+            "max_length_unit, counted before the selections are matched."
+        ),
     },
     {
         "id": OutputRuleId.page_selection_too_many_segments.value,
@@ -223,6 +226,16 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "code": "invalid_request",
         "rule": OutputRuleId.page_selection_malformed.value,
     },
+    # 100 code points but 300 bytes, so it is inside max_length and fails the pattern instead. A
+    # mirror measuring bytes reports page_selection_too_long here and never learns it disagrees,
+    # because both answers reject the request.
+    {
+        # Written as an escape: the character is a fullwidth digit and is meant to be unmistakable.
+        "output": {"format": "pdf", "pages": "\uff11" * 100},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_malformed.value,
+    },
     # Space after the comma. The grammar has no optional whitespace, and a mirror that trims each
     # selection before matching accepts a value the service refuses.
     {
@@ -285,6 +298,12 @@ def output_rules() -> dict[str, Any]:
         # needs this grammar whichever format it supports.
         "page_selection": {
             "max_length": MAX_PAGE_SELECTION_LENGTH,
+            # The unit belongs beside the bound: max_length counts Unicode code points, not bytes,
+            # and it is checked before the pattern is applied. A mirror in a language whose string
+            # length is a byte count answers page_selection_too_long where the service answers
+            # page_selection_malformed — both reject, so only the id reveals the disagreement. The
+            # non-ASCII vector below is the one that catches it.
+            "max_length_unit": "unicode code points",
             "max_selections": MAX_PAGE_SELECTION_SEGMENTS,
             "selection_pattern": PAGE_SELECTION_PATTERN,
             "selection_pattern_flavour": "pcre",

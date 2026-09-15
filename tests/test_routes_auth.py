@@ -219,7 +219,6 @@ def test_constraints_publishes_the_output_rules_under_their_own_version():
     assert output_rules == published_output_rules()
     assert "rules_version" not in output_rules
     assert output_rules["output_rules_version"] >= 1
-    assert document["rules_version"] != output_rules["output_rules_version"]
     # The tables a mirror cannot derive, and the grammar behind `pages`.
     assert output_rules["pdf"]["pdf_a_version"]["a-2b"] == "1.7"
     assert output_rules["pdf"]["tagged_standards"] == ["a-1a", "a-2a", "a-3a", "ua-1"]

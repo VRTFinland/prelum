@@ -320,21 +320,21 @@ def create_app() -> FastAPI:
             # "message" is the prose already in msg.
             lifted = cast(dict[str, object], classified[0].get("ctx", {}))
             context.update({key: value for key, value in lifted.items() if key != "message"})
-        else:
-            # An output-option rule keeps the `value_error` type every other validator failure has,
-            # so `loc`, `type` and `code` are the same whichever of them fired: without the id, the
-            # only thing separating them is `msg`, which is prose a caller may not branch on. Read
-            # from the first error carrying one, matching how `classified` picks its own.
-            rule = next(
-                (
-                    value
-                    for error in errors
-                    if isinstance(value := cast(dict[str, object], error.get("ctx", {})).get("rule"), str)
-                ),
-                None,
-            )
-            if rule is not None:
-                context["rule"] = rule
+        # An output-option rule keeps the `value_error` type every other validator failure has, so
+        # `loc`, `type` and `code` are the same whichever of them fired: without the id, the only
+        # thing separating them is `msg`, which is prose a caller may not branch on.
+        #
+        # Read from errors[0] alone — the error `detail` reports — and never from whichever error
+        # happens to carry one. A body that both omits `source` and breaks an output rule produced
+        # "source: Field required" beside a rule naming the output option, so a client doing what
+        # the documentation says (branch on `rule`, not on `detail`) reported the wrong cause; past
+        # _MAX_PUBLISHED_ERRORS the named rule need not even appear in `errors`. The two fields now
+        # describe one failure, at the cost of saying nothing about a rule the caller has not yet
+        # been told about. setdefault, not assignment: a classified files-key error has already put
+        # its own rule here, and it is the one whose code the response carries.
+        first_rule = cast(dict[str, object], errors[0].get("ctx", {})).get("rule") if errors else None
+        if isinstance(first_rule, str):
+            _ = context.setdefault("rule", first_rule)
 
         # Validation errors carry the raised exception in ctx; encode at any depth so the response
         # body cannot fail to serialise.

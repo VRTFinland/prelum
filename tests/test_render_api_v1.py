@@ -141,6 +141,38 @@ def test_v1_output_rule_rejection_keeps_the_published_validation_error_shape():
     assert set(body["context"]) == {"errors", "rule"}
 
 
+@pytest.mark.parametrize(
+    ("payload", "expected_detail_prefix"),
+    [
+        ({"output": {"format": "png", "pages": "1-2"}}, "source:"),
+        (
+            {
+                "source": '#text("hello")',
+                "output": {"format": "pdf", "standards": ["a-1b", "a-2b", "ua-1"], "pages": "1-a"},
+            },
+            "output.pdf.standards:",
+        ),
+    ],
+)
+def test_v1_reports_no_rule_for_a_failure_the_rules_do_not_name(
+    payload: dict[str, object], expected_detail_prefix: str
+):
+    """
+    `rule` describes the failure `detail` reports, never whichever error happens to carry an id.
+
+    Both of these break an output rule *and* something with no id — a missing source, and three
+    standards where two are allowed. Lifting the id from any error that had one produced
+    "source: Field required" beside a rule about the page selection, so a client following the
+    documentation's advice to branch on `rule` reported a cause the response was not about.
+    """
+    response = client.post("/v1/render", json=payload, headers=TOKEN)
+
+    assert response.status_code == 400
+    body = response.json()
+    assert body["detail"].startswith(expected_detail_prefix)
+    assert "rule" not in body["context"]
+
+
 def test_render_request_requires_non_empty_source():
     with pytest.raises(ValidationError):
         RenderRequest(source="")

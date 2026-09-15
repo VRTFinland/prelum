@@ -119,7 +119,7 @@ counter would send you back through the key rules because a PDF standard was add
 | `pdf.pdf_a_4_standards` | The PDF/A-4 family, which `ua-1` is incompatible with |
 | `image.archives`, `image.min_page` | What `archive` accepts, and the lowest `page` |
 | `image.png` | `min_ppi`, `max_ppi` and the `default_ppi` used when `ppi` is omitted |
-| `page_selection` | The `pages` grammar: `max_length`, `max_selections` and `selection_pattern`, which each comma-separated selection must match in full |
+| `page_selection` | The `pages` grammar: `max_length` with the `max_length_unit` it counts, `max_selections`, and `selection_pattern`, which each comma-separated selection must match in full |
 | `rules` | The rules that need more than one field to decide, each with a stable `id` |
 | `conformance_vectors` | Executable examples — see below |
 
@@ -128,6 +128,10 @@ counter would send you back through the key rules because a PDF standard was add
 Every rule in `rules` answers [`invalid_request`](errors.md) at the same place in the body, so the
 response carries the rule's `id` in `context.rule`. Branch on that rather than on `detail`, which is
 prose and may be reworded.
+
+`rule` always names the failure `detail` reports. A request that breaks one of these rules and also
+something they do not name — a missing `source`, say — reports that instead and carries no `rule`
+until it is fixed.
 
 | `id` | The request is refused when |
 | --- | --- |
