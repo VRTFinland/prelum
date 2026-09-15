@@ -207,8 +207,6 @@ class TypstRenderer:
 
         ``project/`` is also the Typst ``--root``, so nothing outside it is reachable.
 
-        :param job: The validated render job.
-        :return: The rendered bytes, content type, and filename.
         :raises TemplateSourceTooLargeError: If the source exceeds its size limit.
         :raises TemplateFileTooLargeError: If an auxiliary file exceeds its size limit.
         :raises InvalidFileDataError: If an auxiliary file is malformed or escapes the project root.
@@ -255,8 +253,7 @@ class TypstRenderer:
         the model layer. The escape check below asserts that already-proven invariant on a security
         boundary; the errno filter covers what only the filesystem can refuse.
 
-        :param project_root: The temporary project directory, already created.
-        :param files: Mapping of relative path to explicitly encoded file content.
+        :param project_root: Already created; the escape check below is measured against it.
         :raises InvalidFileDataError: If there are too many entries, base64 content is malformed, a key
             escapes the project root, two keys differ only in case, or the keys describe a layout
             that cannot be written.
@@ -303,9 +300,6 @@ class TypstRenderer:
         """
         Resolve one files entry to the bytes to write, enforcing the size limit.
 
-        :param key: The relative path of the entry, used in error messages.
-        :param entry: The file's explicit encoding and content.
-        :return: The decoded content.
         :raises InvalidFileDataError: If base64 content cannot be decoded.
         :raises TemplateFileTooLargeError: If the content exceeds ``max_inline_file_bytes``.
         """
@@ -337,10 +331,7 @@ class TypstRenderer:
         """
         Bind the request data into the template source, compile it, and finalise the output.
 
-        :param job: The render job, used for data binding and output naming.
-        :param layout: The directories this render works in.
-        :param source_bytes: The template source to compile, as UTF-8 bytes.
-        :return: The rendered bytes, content type, and filename.
+        :param source_bytes: The template source to compile, already UTF-8.
         """
         prelude = f"#let request = {self._json_to_typst(job.data)};\n#let data = request;\n"
         bound_bytes = prelude.encode("utf-8") + source_bytes
