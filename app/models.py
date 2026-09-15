@@ -7,6 +7,8 @@ from typing import Annotated, ClassVar, Literal, LiteralString, cast
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
+from app.core.errors import Origin
+
 type JSONValue = str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | Mapping[str, JSONValue] | None
 
 
@@ -60,6 +62,7 @@ class Problem(BaseModel):
     """
 
     code: str
+    origin: Origin
     title: str
     status: int
     detail: str

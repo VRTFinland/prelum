@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from app.core.constraints import files_key_rules
+from app.core.errors import Origin
 from scripts.export_constraints import export_constraints
 from scripts.export_openapi import export_openapi
 
@@ -57,7 +58,15 @@ def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Pat
         problem = responses[status]["content"]
         assert set(problem) == {"application/problem+json"}
         problem_schema = problem["application/problem+json"]["schema"]
-        assert set(problem_schema["required"]) == {"code", "title", "status", "detail", "instance", "context"}
+        assert set(problem_schema["required"]) == {
+            "code",
+            "origin",
+            "title",
+            "status",
+            "detail",
+            "instance",
+            "context",
+        }
         assert problem_schema["properties"]["detail"]["type"] == "string"
         assert problem_schema["properties"]["context"]["type"] == "object"
 
@@ -107,3 +116,23 @@ def test_makefile_generates_the_constraints_artefact_for_the_site():
 
     assert "python -m scripts.export_constraints" in makefile
     assert "docs-build: docs-examples docs-openapi docs-constraints" in makefile
+
+
+def test_openapi_publishes_the_error_origin_and_its_values(tmp_path: Path):
+    """A caller pinning a branch on origin needs the value set, not a bare string type."""
+    destination = tmp_path / "openapi.json"
+
+    export_openapi(destination)
+
+    schema = json.loads(destination.read_text(encoding="utf-8"))
+    # routes.py inlines Problem.model_json_schema() straight into each error response instead of
+    # routing it through FastAPI's response_model machinery, so it never reaches
+    # components.schemas as a named "Problem" component. Assert against the schema the error
+    # responses actually carry.
+    problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"][
+        "schema"
+    ]
+    assert "origin" in problem["required"]
+    # The enum lives in a local $defs entry alongside the inlined schema, not under components.schemas.
+    referenced = problem["properties"]["origin"]["$ref"].rsplit("/", 1)[-1]
+    assert set(problem["$defs"][referenced]["enum"]) == {origin.value for origin in Origin}
