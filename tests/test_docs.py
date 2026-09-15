@@ -4,6 +4,7 @@ from pathlib import Path
 from app.core.constraints import files_key_rules
 from app.core.errors import Origin, error_codes
 from scripts.export_constraints import export_constraints
+from scripts.export_error_codes import export_error_codes
 from scripts.export_openapi import export_openapi
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -158,3 +159,31 @@ def test_every_error_code_is_documented_with_its_status_and_origin():
     expected = {entry["code"]: (entry["status"], entry["origin"]) for entry in error_codes()}
 
     assert _documented_codes() == expected
+
+
+def test_error_codes_export_publishes_the_taxonomy_without_deployment_configuration(tmp_path: Path):
+    """A caller can pin the mapping without a token, exactly as it can pin the files-key rules."""
+    destination = tmp_path / "error-codes.json"
+
+    export_error_codes(destination)
+
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document == error_codes()
+    assert all(set(entry) == {"code", "status", "origin"} for entry in document)
+    # A spot check on the family that motivated the field, so an empty or truncated artefact fails.
+    assert {"code": "template_file_too_large", "status": 413, "origin": "template"} in document
+    assert {"code": "page_selection_too_large", "status": 413, "origin": "request"} in document
+
+
+def test_makefile_generates_the_error_codes_artefact_for_the_site():
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+
+    assert "python -m scripts.export_error_codes" in makefile
+    assert "docs-build: docs-examples docs-openapi docs-constraints docs-error-codes" in makefile
+
+
+def test_the_generated_error_codes_artefact_is_not_committed():
+    """It is built by docs-build like its two siblings; a tracked copy would go stale in review."""
+    gitignore = (ROOT / ".gitignore").read_text(encoding="utf-8")
+
+    assert "docs/api/error-codes.json" in gitignore

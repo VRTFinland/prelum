@@ -119,6 +119,9 @@ echoed; `detail` names it, shortened.
 
 A 429 includes `Retry-After`; callers should wait at least that many seconds before retrying.
 
+The complete mapping is published as [`error-codes.json`](error-codes.json): every code with its
+status and origin, generated from the service's own definitions.
+
 ## Privacy of error responses
 
 Request bodies are never echoed. Typst diagnostics are neither returned nor logged because they
