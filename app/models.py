@@ -167,6 +167,7 @@ class PdfOutputRules(BaseModel):
     max_standards: int
     pdf_a_version: dict[str, str]
     tagged_standards: list[str]
+    pdf_a_4_standards: list[str]
 
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
@@ -191,6 +192,7 @@ class OutputRulesDocument(BaseModel):
     pdf: PdfOutputRules
     image: ImageOutputRules
     page_selection: PageSelectionRules
+    rule_evaluation: str
     rules: list[OutputRule]
     conformance_vectors: list[OutputConformanceVector]
 
@@ -268,6 +270,10 @@ PDF_A_VERSION = {
     PdfStandard.a_4f: PdfVersion.v2_0,
     PdfStandard.a_4e: PdfVersion.v2_0,
 }
+# The PDF/A-4 family, derived from the map rather than spelled a second time. ua-1 is incompatible
+# with exactly these three, and app/core/output_rules.py publishes the set so that a mirror can
+# apply the rule from data instead of inferring the family from how a standard's name begins.
+PDF_A_4_STANDARDS = frozenset(standard for standard in PDF_A_VERSION if standard.value.startswith("a-4"))
 
 
 class OutputRuleId(StrEnum):
@@ -415,7 +421,7 @@ class PdfOutput(_RenderOutputBase):
         pdf_a = [standard for standard in self.standards if standard in PDF_A_VERSION]
         if len(pdf_a) > 1:
             _reject(OutputRuleId.multiple_pdf_a_standards, "Only one PDF/A standard can be selected")
-        if PdfStandard.ua_1 in self.standards and any(standard.value.startswith("a-4") for standard in pdf_a):
+        if PdfStandard.ua_1 in self.standards and PDF_A_4_STANDARDS.intersection(pdf_a):
             _reject(OutputRuleId.ua_1_with_pdf_a_4, "PDF/UA-1 is incompatible with PDF/A-4")
 
         if self.version is not None and pdf_a and self.version != PDF_A_VERSION[pdf_a[0]]:

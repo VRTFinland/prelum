@@ -22,6 +22,7 @@ from app.models import (
     MIN_IMAGE_PAGE,
     MIN_PNG_PPI,
     PAGE_SELECTION_PATTERN,
+    PDF_A_4_STANDARDS,
     PDF_A_VERSION,
     TAGGED_PDF_STANDARDS,
     ArchiveFormat,
@@ -39,7 +40,40 @@ OUTPUT_RULES_VERSION = 1
 # The rules that need more than one field to decide, so the OpenAPI schema cannot express them. Each
 # has a stable id, which the rejection carries in `context.rule`: every one of them answers
 # `invalid_request` at the same `loc`, so without the id only the prose distinguished them.
+#
+# Listed in the order Prelum applies them, which `rule_evaluation` below states as data: an object
+# breaking two rules reports the earlier one, and a mirror that checks them in another order
+# disagrees with the service about which constraint the caller broke while agreeing that one was.
+# The page-selection rules come first because `pages` is validated as a field, before any rule that
+# needs a second field to decide.
 RULES: list[dict[str, str]] = [
+    {
+        "id": OutputRuleId.page_selection_too_long.value,
+        "error_code": "invalid_request",
+        "description": f"pages must not exceed max_length ({MAX_PAGE_SELECTION_LENGTH}) characters.",
+    },
+    {
+        "id": OutputRuleId.page_selection_too_many_segments.value,
+        "error_code": "invalid_request",
+        "description": (
+            f"pages must not exceed max_selections ({MAX_PAGE_SELECTION_SEGMENTS}) comma-separated "
+            "selections. Counted before the selections are matched, so a value breaking both this "
+            "rule and selection_pattern reports this one."
+        ),
+    },
+    {
+        "id": OutputRuleId.page_selection_malformed.value,
+        "error_code": "invalid_request",
+        "description": (
+            "Every comma-separated selection in pages must match selection_pattern in full. The "
+            "grammar accepts ASCII digits only, matching Typst's own CLI."
+        ),
+    },
+    {
+        "id": OutputRuleId.page_range_end_precedes_start.value,
+        "error_code": "invalid_request",
+        "description": "A closed range in pages must not end before it starts.",
+    },
     {
         "id": OutputRuleId.duplicate_standards.value,
         "error_code": "invalid_request",
@@ -89,33 +123,6 @@ RULES: list[dict[str, str]] = [
         "id": OutputRuleId.page_with_archive.value,
         "error_code": "invalid_request",
         "description": "An image output's page cannot be combined with archive; select pages instead.",
-    },
-    {
-        "id": OutputRuleId.page_selection_too_long.value,
-        "error_code": "invalid_request",
-        "description": f"pages must not exceed max_length ({MAX_PAGE_SELECTION_LENGTH}) characters.",
-    },
-    {
-        "id": OutputRuleId.page_selection_too_many_segments.value,
-        "error_code": "invalid_request",
-        "description": (
-            f"pages must not exceed max_selections ({MAX_PAGE_SELECTION_SEGMENTS}) comma-separated "
-            "selections. Counted before the selections are matched, so a value breaking both this "
-            "rule and selection_pattern reports this one."
-        ),
-    },
-    {
-        "id": OutputRuleId.page_selection_malformed.value,
-        "error_code": "invalid_request",
-        "description": (
-            "Every comma-separated selection in pages must match selection_pattern in full. The "
-            "grammar accepts ASCII digits only, matching Typst's own CLI."
-        ),
-    },
-    {
-        "id": OutputRuleId.page_range_end_precedes_start.value,
-        "error_code": "invalid_request",
-        "description": "A closed range in pages must not end before it starts.",
     },
 ]
 
@@ -265,6 +272,9 @@ def output_rules() -> dict[str, Any]:
             # multiple_pdf_a_standards counts and how ua-1 is the one that may accompany a profile.
             "pdf_a_version": {standard.value: version.value for standard, version in PDF_A_VERSION.items()},
             "tagged_standards": sorted(standard.value for standard in TAGGED_PDF_STANDARDS),
+            # Published rather than left to prose so ua_1_with_pdf_a_4 can be applied from data: a
+            # mirror inferring the family from the "a-4" prefix is parsing names, not reading rules.
+            "pdf_a_4_standards": sorted(standard.value for standard in PDF_A_4_STANDARDS),
         },
         "image": {
             "archives": list(get_args(ArchiveFormat.__value__)),
@@ -282,6 +292,10 @@ def output_rules() -> dict[str, Any]:
             # selection whole, and a mirror anchoring it with '^' and '$' accepts a trailing newline.
             "selection_pattern_matches_whole_selection": True,
         },
+        "rule_evaluation": (
+            "rules are listed in the order Prelum applies them; the first to fail is the one "
+            "reported in context.rule"
+        ),
         "rules": RULES,
         "conformance_vectors": CONFORMANCE_VECTORS,
     }
