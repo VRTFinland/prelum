@@ -112,6 +112,7 @@ counter would send you back through the key rules because a PDF standard was add
 | Field | What it carries |
 | --- | --- |
 | `formats` | The values `format` accepts |
+| `pdf.formats`, `image.formats` | Which `format` values each block of rules governs. Between them they cover `formats`, so a client never has to read "not `pdf`, therefore an image" — a guess that would misapply the image rules to any format added later |
 | `pdf.versions`, `pdf.standards` | The values `version` and `standards` accept |
 | `pdf.max_standards` | How many entries `standards` may hold |
 | `pdf.pdf_a_version` | Which PDF version each PDF/A standard requires. A standard absent from this map is not a PDF/A profile — which is how `ua-1` is the one that may accompany one |

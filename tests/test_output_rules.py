@@ -6,7 +6,8 @@ service. The same reasoning as tests/test_constraints.py, one layer over.
 """
 
 import re
-from typing import Any
+from collections.abc import Callable
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -16,6 +17,7 @@ from app.core.output_rules import CONFORMANCE_VECTORS, OUTPUT_RULES_VERSION, RUL
 from app.main import app
 from app.models import (
     DEFAULT_PNG_PPI,
+    IMAGE_OUTPUT_FORMATS,
     MAX_PAGE_SELECTION_LENGTH,
     MAX_PAGE_SELECTION_SEGMENTS,
     MAX_PDF_STANDARDS,
@@ -25,6 +27,7 @@ from app.models import (
     PAGE_SELECTION_PATTERN,
     PDF_A_4_STANDARDS,
     PDF_A_VERSION,
+    PDF_OUTPUT_FORMATS,
     TAGGED_PDF_STANDARDS,
     OutputFormat,
     OutputRuleId,
@@ -110,6 +113,8 @@ def test_document_states_the_enforced_limits_and_tables():
     }
     assert document["pdf"]["tagged_standards"] == sorted(standard.value for standard in TAGGED_PDF_STANDARDS)
     assert document["pdf"]["pdf_a_4_standards"] == sorted(standard.value for standard in PDF_A_4_STANDARDS)
+    assert document["pdf"]["formats"] == sorted(output_format.value for output_format in PDF_OUTPUT_FORMATS)
+    assert document["image"]["formats"] == sorted(output_format.value for output_format in IMAGE_OUTPUT_FORMATS)
     assert document["image"]["min_page"] == MIN_IMAGE_PAGE
     assert document["image"]["png"] == {
         "min_ppi": MIN_PNG_PPI,
@@ -129,15 +134,23 @@ def test_the_static_document_carries_no_deployment_configuration():
     assert not {"max_output_files", "max_output_bytes", "font_path", "environment"} & document.keys()
 
 
+def _inverted_closed_range(part: str) -> bool:
+    start, _, end = part.partition("-")
+    return start.isdigit() and end.isdigit() and int(end) < int(start)
+
+
 def _mirror(document: dict[str, Any], output: dict[str, Any]) -> str | None:
     """
     Decide one `output` object using nothing but the published document.
 
     This is the client the artefact exists for, written the way a caller would have to write it: the
-    tables come from `pdf`, the grammar from `page_selection`, and the rules are applied in the order
-    `rules` lists them, which `rule_evaluation` promises is the order Prelum uses. Nothing is
-    imported from app.models, so a rule that reaches the validators without reaching the document
-    fails here rather than in a caller's deployment.
+    tables come from `pdf`, the grammar from `page_selection`, the formats each block governs from
+    `pdf.formats` and `image.formats`, and — the part that makes `rule_evaluation` a promise rather
+    than prose — the rules are applied by walking `document["rules"]` in the order it lists them.
+    Reorder RULES and this mirror's answers move with it, which is what
+    `test_the_published_rule_order_is_the_order_the_mirror_applies` pins. Nothing is imported from
+    app.models, so a rule that reaches the validators without reaching the document fails here
+    rather than in a caller's deployment.
 
     The literals it does spell — `ua-1`, `2.0` — are named by the rules that use them, the same way
     the files-key set rules are implemented from their descriptions. What a mirror cannot derive is
@@ -145,44 +158,42 @@ def _mirror(document: dict[str, Any], output: dict[str, Any]) -> str | None:
     """
     selection = document["page_selection"]
     pdf_a_version: dict[str, str] = document["pdf"]["pdf_a_version"]
-    pages = output.get("pages")
+    is_pdf = output["format"] in document["pdf"]["formats"]
+    is_image = output["format"] in document["image"]["formats"]
+    pages: str | None = output.get("pages")
+    parts = pages.split(",") if pages is not None else []
+    pattern = re.compile(selection["selection_pattern"])
+    standards: list[str] = output.get("standards", []) if is_pdf else []
+    pdf_a = [standard for standard in standards if standard in pdf_a_version]
+    version: str | None = output.get("version")
 
-    if pages is not None:
-        if len(pages) > selection["max_length"]:
-            return "page_selection_too_long"
-        parts = pages.split(",")
-        if len(parts) > selection["max_selections"]:
-            return "page_selection_too_many_segments"
-        pattern = re.compile(selection["selection_pattern"])
-        if any(pattern.fullmatch(part) is None for part in parts):
-            return "page_selection_malformed"
-        for part in parts:
-            start, _, end = part.partition("-")
-            if end and int(end) < int(start):
-                return "page_range_end_precedes_start"
+    # One predicate per rule id, each deciding on its own. Nothing here assumes an earlier rule has
+    # already run: order is supplied entirely by the loop below, so it is the document that decides
+    # which of two broken rules is reported.
+    checks: dict[str, Callable[[], bool]] = {
+        "page_selection_too_long": lambda: pages is not None and len(pages) > selection["max_length"],
+        "page_selection_too_many_segments": lambda: len(parts) > selection["max_selections"],
+        "page_selection_malformed": lambda: any(pattern.fullmatch(part) is None for part in parts),
+        "page_range_end_precedes_start": lambda: any(_inverted_closed_range(part) for part in parts),
+        "duplicate_standards": lambda: len(set(standards)) != len(standards),
+        "multiple_pdf_a_standards": lambda: len(pdf_a) > 1,
+        "ua_1_with_pdf_a_4": lambda: (
+            "ua-1" in standards and bool(set(document["pdf"]["pdf_a_4_standards"]).intersection(pdf_a))
+        ),
+        "version_conflicts_with_standard": lambda: (
+            version is not None and any(version != pdf_a_version[standard] for standard in pdf_a)
+        ),
+        "ua_1_with_pdf_2_0": lambda: version == "2.0" and "ua-1" in standards,
+        "pages_with_tagged_standard": lambda: (
+            pages is not None and bool(set(document["pdf"]["tagged_standards"]).intersection(standards))
+        ),
+        "pages_requires_archive": lambda: is_image and output.get("archive") is None and pages is not None,
+        "page_with_archive": lambda: is_image and output.get("archive") is not None and output.get("page") is not None,
+    }
 
-    if output["format"] == "pdf":
-        standards: list[str] = output.get("standards", [])
-        if len(set(standards)) != len(standards):
-            return "duplicate_standards"
-        pdf_a = [standard for standard in standards if standard in pdf_a_version]
-        if len(pdf_a) > 1:
-            return "multiple_pdf_a_standards"
-        if "ua-1" in standards and set(document["pdf"]["pdf_a_4_standards"]).intersection(pdf_a):
-            return "ua_1_with_pdf_a_4"
-        version = output.get("version")
-        if version is not None and pdf_a and version != pdf_a_version[pdf_a[0]]:
-            return "version_conflicts_with_standard"
-        if version == "2.0" and "ua-1" in standards:
-            return "ua_1_with_pdf_2_0"
-        if pages is not None and set(document["pdf"]["tagged_standards"]).intersection(standards):
-            return "pages_with_tagged_standard"
-        return None
-
-    if output.get("archive") is None and pages is not None:
-        return "pages_requires_archive"
-    if output.get("archive") is not None and output.get("page") is not None:
-        return "page_with_archive"
+    for rule in document["rules"]:
+        if checks[rule["id"]]():
+            return cast(str, rule["id"])
     return None
 
 
@@ -211,6 +222,45 @@ def test_the_mirror_is_not_vacuous():
 
     assert _mirror(document, {"format": "pdf", "standards": ["a-2b", "a-3b"]}) == "multiple_pdf_a_standards"
     assert _mirror(document, {"format": "png", "pages": "1-2"}) == "pages_requires_archive"
+
+
+def test_every_format_is_claimed_by_exactly_one_block():
+    """
+    A format governed by neither block, or by both, is one a mirror decides by guessing.
+
+    `image` states which formats it governs so that a mirror need not read "not pdf, therefore
+    image". That only holds while the two lists between them cover `formats` without overlapping —
+    a fourth entry in OutputFormat claimed by neither fails here rather than in a caller's mirror,
+    which would silently apply the image rules to it.
+    """
+    document = output_rules()
+    pdf_formats = set(document["pdf"]["formats"])
+    image_formats = set(document["image"]["formats"])
+
+    assert not pdf_formats & image_formats
+    assert pdf_formats | image_formats == set(document["formats"])
+
+
+def test_the_published_rule_order_is_the_order_the_mirror_applies():
+    """
+    `rule_evaluation` promises the listed order is the applied one; this is what holds it.
+
+    The mirror walks `rules` as published, so moving a rule in output_rules.py moves the answer an
+    object breaking two of them gets. Without this, `_mirror` could hardcode an order that happens
+    to match today and agree with every vector while the document said something else — and a
+    caller implementing the published order would disagree with the service, each convinced the
+    other had the rule wrong.
+    """
+    document = output_rules()
+    breaks_two = {"format": "pdf", "version": "1.4", "standards": ["a-2b", "a-3b"]}
+    moved = OutputRuleId.version_conflicts_with_standard.value
+
+    assert _mirror(document, breaks_two) == OutputRuleId.multiple_pdf_a_standards.value
+
+    reordered = [rule for rule in document["rules"] if rule["id"] == moved]
+    reordered += [rule for rule in document["rules"] if rule["id"] != moved]
+
+    assert _mirror({**document, "rules": reordered}, breaks_two) == moved
 
 
 def test_rejected_vectors_are_rejected_by_the_models_too():

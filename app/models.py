@@ -152,6 +152,9 @@ class PngOutputRules(BaseModel):
 class ImageOutputRules(BaseModel):
     """What PNG and SVG output accept beyond the fields every output shares."""
 
+    # Which `format` values this block governs. Stated rather than left to be inferred from "not
+    # pdf": a mirror deciding by exclusion applies these rules to any format added later.
+    formats: list[str]
     archives: list[str]
     min_page: int
     png: PngOutputRules
@@ -162,6 +165,8 @@ class ImageOutputRules(BaseModel):
 class PdfOutputRules(BaseModel):
     """The PDF vocabulary, with the two lookup tables a mirror would otherwise transcribe."""
 
+    # Which `format` values this block governs, for the same reason as `image.formats`.
+    formats: list[str]
     versions: list[str]
     standards: list[str]
     max_standards: int
@@ -465,6 +470,23 @@ class SvgOutput(_ImageOutputBase):
 
 
 type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discriminator="format")]
+
+# Which model validates each `format`, and so which rules apply to it. app/core/output_rules.py
+# publishes both sets, because a mirror that reads "not pdf, therefore image" is deciding by
+# exclusion: add a fourth format that is neither, and it silently applies the image rules to it.
+# Derived from the class hierarchy rather than listed a second time, and every member of
+# OutputFormat must be claimed by exactly one set — tests/test_output_rules.py asserts it.
+OUTPUT_MODELS: dict[OutputFormat, type[_RenderOutputBase]] = {
+    OutputFormat.pdf: PdfOutput,
+    OutputFormat.png: PngOutput,
+    OutputFormat.svg: SvgOutput,
+}
+PDF_OUTPUT_FORMATS = frozenset(
+    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, PdfOutput)
+)
+IMAGE_OUTPUT_FORMATS = frozenset(
+    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, _ImageOutputBase)
+)
 
 
 def _as_validation_error(check: Callable[[], object]) -> None:

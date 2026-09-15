@@ -15,6 +15,7 @@ from typing import Any, get_args
 
 from app.models import (
     DEFAULT_PNG_PPI,
+    IMAGE_OUTPUT_FORMATS,
     MAX_PAGE_SELECTION_LENGTH,
     MAX_PAGE_SELECTION_SEGMENTS,
     MAX_PDF_STANDARDS,
@@ -24,6 +25,7 @@ from app.models import (
     PAGE_SELECTION_PATTERN,
     PDF_A_4_STANDARDS,
     PDF_A_VERSION,
+    PDF_OUTPUT_FORMATS,
     TAGGED_PDF_STANDARDS,
     ArchiveFormat,
     OutputFormat,
@@ -163,6 +165,16 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "code": "invalid_request",
         "rule": OutputRuleId.multiple_pdf_a_standards.value,
     },
+    # Breaks multiple_pdf_a_standards and version_conflicts_with_standard at once, so it is the
+    # vector that makes rule_evaluation's promise falsifiable: the answer is the rule listed first,
+    # and a mirror applying them in the other order reports the other one while agreeing that the
+    # object is bad.
+    {
+        "output": {"format": "pdf", "version": "1.4", "standards": ["a-2b", "a-3b"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.multiple_pdf_a_standards.value,
+    },
     {
         "output": {"format": "pdf", "standards": ["a-4", "ua-1"]},
         "accepted": False,
@@ -277,6 +289,11 @@ def output_rules() -> dict[str, Any]:
         "output_rules_version": OUTPUT_RULES_VERSION,
         "formats": [output_format.value for output_format in OutputFormat],
         "pdf": {
+            # Which formats each block governs. Without them a mirror decides the image rules by
+            # exclusion — "not pdf, therefore image" — which is the defect pdf_a_4_standards was
+            # added to avoid one level down, and which misapplies these rules to any format added
+            # later. tests/test_output_rules.py drives its mirror off exactly these two lists.
+            "formats": sorted(output_format.value for output_format in PDF_OUTPUT_FORMATS),
             "versions": [version.value for version in PdfVersion],
             "standards": [standard.value for standard in PdfStandard],
             "max_standards": MAX_PDF_STANDARDS,
@@ -290,6 +307,7 @@ def output_rules() -> dict[str, Any]:
             "pdf_a_4_standards": sorted(standard.value for standard in PDF_A_4_STANDARDS),
         },
         "image": {
+            "formats": sorted(output_format.value for output_format in IMAGE_OUTPUT_FORMATS),
             "archives": list(get_args(ArchiveFormat.__value__)),
             "min_page": MIN_IMAGE_PAGE,
             "png": {"min_ppi": MIN_PNG_PPI, "max_ppi": MAX_PNG_PPI, "default_ppi": DEFAULT_PNG_PPI},
