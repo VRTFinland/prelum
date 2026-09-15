@@ -37,7 +37,39 @@ router = APIRouter()
 logger: FilteringBoundLogger = cast(FilteringBoundLogger, structlog.get_logger())
 api_token_header = APIKeyHeader(name=API_TOKEN_HEADER, scheme_name="PrelumApiToken", auto_error=False)
 
-_PROBLEM_SCHEMA = Problem.model_json_schema()
+def _inline_local_defs(schema: dict[str, Any]) -> dict[str, Any]:
+    """
+    Resolve `$defs` produced by `model_json_schema()` into the properties that reference them.
+
+    `_PROBLEM_SCHEMA` below is inlined directly into every error response rather than hoisted into
+    `components.schemas`, so a `$ref` to a sibling `$defs` entry (which Pydantic emits for any enum
+    field, such as `Problem.origin`) would dangle: it resolves against the OpenAPI document root,
+    which has no `$defs` of its own. This walks the property list once and substitutes each such
+    `$ref` with the definition it names, so the exported schema is self-contained.
+
+    Deliberately narrow: it only handles a top-level property whose entire value is a single `$ref`
+    into this same schema's `$defs`, which is all `Problem` needs. Anything else — a nested `$ref`,
+    a `$ref` mixed with sibling keys, an unresolved name — raises rather than silently passing
+    through, so a future field shaped differently fails loudly instead of reintroducing this bug.
+    """
+    defs = schema.pop("$defs", {})
+    for name, prop in schema["properties"].items():
+        ref = prop.get("$ref")
+        if ref is None:
+            continue
+        if set(prop) != {"$ref"}:
+            raise ValueError(f"Problem.{name}: $ref has sibling keys, cannot inline: {prop}")
+        prefix = "#/$defs/"
+        if not ref.startswith(prefix):
+            raise ValueError(f"Problem.{name}: $ref does not point at a local $defs entry: {ref}")
+        def_name = ref.removeprefix(prefix)
+        if def_name not in defs:
+            raise ValueError(f"Problem.{name}: $ref names undefined $defs entry: {def_name}")
+        schema["properties"][name] = defs[def_name]
+    return schema
+
+
+_PROBLEM_SCHEMA = _inline_local_defs(Problem.model_json_schema())
 
 _RENDER_RESPONSES: dict[int | str, dict[str, Any]] = {
     200: {

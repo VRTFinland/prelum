@@ -15,7 +15,7 @@ IMAGE := $(if ${REGISTRY},${REGISTRY}/,)${IMAGE_NAME}:${DOCKER_TAG}
 LATEST_IMAGE := $(if ${REGISTRY},${REGISTRY}/,)${IMAGE_NAME}:latest
 DOCS_PORT ?= 9876
 
-.PHONY: version build buildx-build-publish push run serve test test-all test-integration test-docker lint lint-fix format type-check checks regenerate-examples docs-examples docs-openapi docs-constraints docs-build docs-serve
+.PHONY: version build buildx-build-publish push run serve test test-all test-integration test-docker lint lint-fix format type-check checks regenerate-examples docs-examples docs-openapi docs-constraints docs-error-codes docs-build docs-serve
 
 # Print the tag the next build would use, e.g. for CI or `docker run`.
 version:
@@ -101,8 +101,11 @@ docs-openapi:
 docs-constraints:
 	@PRELUM_ENVIRONMENT=test uv run python -m scripts.export_constraints
 
-docs-build: docs-examples docs-openapi docs-constraints
+docs-error-codes:
+	@PRELUM_ENVIRONMENT=test uv run python -m scripts.export_error_codes
+
+docs-build: docs-examples docs-openapi docs-constraints docs-error-codes
 	@uv run --group docs zensical build --strict
 
-docs-serve: docs-examples docs-openapi docs-constraints
+docs-serve: docs-examples docs-openapi docs-constraints docs-error-codes
 	@uv run --group docs zensical serve -a 127.0.0.1:${DOCS_PORT}

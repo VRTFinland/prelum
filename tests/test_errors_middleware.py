@@ -9,6 +9,7 @@ from app.core.errors import (
     AppError,
     ForbiddenError,
     InvalidTemplatePathError,
+    Origin,
     RenderError,
     RenderTimeoutError,
     RequestTooLargeError,
@@ -155,10 +156,27 @@ def test_app_error_keeps_the_context_it_was_given():
     assert error.context == {"limit": 10, "key": "a/b.png"}
 
 
-def test_to_response_always_carries_context_as_the_sixth_member():
+def test_to_response_always_carries_context_as_the_last_member():
     body = json.loads(AppError("test").to_response(_request()).body)
-    assert set(body) == {"code", "title", "status", "detail", "instance", "context"}
+    assert set(body) == {"code", "title", "status", "detail", "instance", "origin", "context"}
     assert body["context"] == {}
+
+
+def test_to_response_publishes_the_origin_as_a_plain_string():
+    """Callers compare it to a literal, so it must serialise as "service", not as an enum repr."""
+    body = json.loads(AppError("test").to_response(_request()).body)
+    assert body["origin"] == "service"
+
+
+def test_to_response_publishes_each_origin_verbatim():
+    assert json.loads(RequestTooLargeError(limit=1).to_response(_request()).body)["origin"] == "request"
+    assert json.loads(RenderError("boom").to_response(_request()).body)["origin"] == "service"
+
+
+def test_app_error_defaults_to_the_service_origin():
+    """The default is the loud one: a class that forgets to declare its origin pages us."""
+    assert AppError("test").origin is Origin.service
+    assert AppError("test").is_server_fault is True
 
 
 def test_to_response_emits_context_values():
@@ -247,7 +265,7 @@ def test_a_legitimate_validation_message_survives_the_bound():
 def _problem(response: object) -> dict[str, object]:
     body = response.json()  # pyright: ignore[reportAttributeAccessIssue]
     assert response.headers["content-type"].startswith("application/problem+json")  # pyright: ignore[reportAttributeAccessIssue]
-    assert set(body) == {"code", "title", "status", "detail", "instance", "context"}
+    assert set(body) == {"code", "title", "status", "detail", "instance", "origin", "context"}
     return body
 
 

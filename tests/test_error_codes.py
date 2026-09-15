@@ -20,6 +20,7 @@ from app.core.errors import (
     InvalidTemplatePathError,
     MethodNotAllowedError,
     NotFoundError,
+    Origin,
     OutputTooLargeError,
     PageSelectionTooLargeError,
     RenderError,
@@ -32,6 +33,7 @@ from app.core.errors import (
     TemplateSourceTooLargeError,
     TooManyOutputFilesError,
     UnsupportedFormatError,
+    error_codes,
 )
 
 
@@ -138,7 +140,7 @@ _CONTEXT_CONTRACT: list[tuple[AppError, frozenset[str]]] = [
     (ServiceUnavailableError("bad"), frozenset()),
 ]
 
-_STANDARD_MEMBERS = {"code", "title", "status", "detail", "instance", "context"}
+_STANDARD_MEMBERS = {"code", "origin", "title", "status", "detail", "instance", "context"}
 
 
 @pytest.mark.parametrize(("error", "keys"), _CONTEXT_CONTRACT, ids=lambda item: getattr(item, "code", None))
@@ -162,3 +164,78 @@ def test_context_never_shadows_a_standard_member_and_always_serialises(error: Ap
 def test_detail_is_always_prose(error: AppError, _keys: frozenset[str]):
     assert isinstance(error.detail, str)
     assert error.detail
+
+
+def test_every_error_class_declares_its_own_origin():
+    """An inherited origin is how the caller's allowlist drifted; a new class must state its own."""
+    inheriting = [cls.__name__ for cls in _error_classes() if "origin" not in cls.__dict__]
+    assert not inheriting, f"error classes inheriting origin instead of declaring it: {inheriting}"
+
+
+def test_origins_are_members_of_the_published_enum():
+    for cls in _error_classes():
+        assert isinstance(cls.origin, Origin), f"{cls.__name__}: {cls.origin!r}"
+
+
+def test_is_server_fault_follows_origin_and_nothing_else():
+    """One classification drives the published field and the log level, so they cannot disagree."""
+    for cls in _error_classes():
+        # cls.__new__(cls) rather than object.__new__(cls): BaseException defines its own __new__,
+        # and calling object's directly is rejected on this interpreter. Neither runs __init__, so
+        # this still checks the class-level declaration without satisfying each subclass's kwargs.
+        error = cls.__new__(cls)
+        assert error.is_server_fault is (cls.origin is Origin.service), cls.__name__
+
+
+def test_every_server_status_is_attributed_to_the_service():
+    """A 5xx may never claim to be the caller's doing.
+
+    Deliberately one-way: the converse is not asserted, so a future 4xx that is genuinely ours stays
+    expressible and status-derived classification cannot creep back in.
+    """
+    misattributed = [cls.__name__ for cls in _error_classes() if cls.status >= 500 and cls.origin is not Origin.service]
+    assert not misattributed, f"5xx classes not attributed to the service: {misattributed}"
+
+
+@pytest.mark.parametrize(
+    ("error_class", "expected"),
+    [
+        (InvalidRequestError, Origin.request),
+        (UnsupportedFormatError, Origin.request),
+        (InvalidTemplatePathError, Origin.request),
+        (InvalidFileDataError, Origin.request),
+        (ForbiddenError, Origin.request),
+        (NotFoundError, Origin.request),
+        (MethodNotAllowedError, Origin.request),
+        (RenderTimeoutError, Origin.request),
+        (StringTooLargeError, Origin.request),
+        (RequestTooLargeError, Origin.request),
+        (OutputTooLargeError, Origin.request),
+        (PageSelectionTooLargeError, Origin.request),
+        (TooManyOutputFilesError, Origin.request),
+        (TemplateSourceTooLargeError, Origin.template),
+        (TemplateFileTooLargeError, Origin.template),
+        (InlineTemplateError, Origin.template),
+        (ServiceOverloadedError, Origin.capacity),
+        (RenderError, Origin.service),
+        (ServiceUnavailableError, Origin.service),
+    ],
+)
+def test_origin_values_are_pinned(error_class: type[AppError], expected: Origin):
+    assert error_class.origin is expected
+
+
+def test_the_413_family_is_split_by_origin():
+    """The reason the field exists: seven codes answer 413 and only some are the caller's doing."""
+    assert TemplateSourceTooLargeError.origin is Origin.template
+    assert TemplateFileTooLargeError.origin is Origin.template
+    assert StringTooLargeError.origin is Origin.request
+    assert RequestTooLargeError.origin is Origin.request
+    assert OutputTooLargeError.origin is Origin.request
+    assert PageSelectionTooLargeError.origin is Origin.request
+    assert TooManyOutputFilesError.origin is Origin.request
+
+
+def test_error_codes_covers_exactly_the_error_classes():
+    """The documentation and the artefact are generated from this; a class it misses is invisible."""
+    assert {entry["code"] for entry in error_codes()} == {cls.code for cls in _error_classes()}

@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app.core.errors import TooManyOutputFilesError
+from app.core.errors import RenderError, TooManyOutputFilesError
 from app.deps import get_renderer
 from app.main import app
 from app.models import RenderFile, RenderRequest
@@ -439,3 +439,51 @@ def test_v1_unencodable_file_content_reports_its_key_without_an_errors_list():
     problem = response.json()
     assert problem["code"] == "invalid_file_data"
     assert problem["context"] == {"key": "x.typ"}
+
+
+def test_v1_publishes_the_request_origin_for_a_malformed_body():
+    response = client.post("/v1/render", json={}, headers=TOKEN)
+
+    assert response.status_code == 400
+    problem = response.json()
+    assert problem["code"] == "invalid_request"
+    assert problem["origin"] == "request"
+
+
+def test_v1_publishes_the_template_origin_for_an_oversized_source(make_renderer: Callable[..., TypstRenderer]):
+    # 1024 is the settings floor (Settings.max_template_source_bytes has ge=1024), so 16 from the
+    # brief would fail Settings construction; 1024/2048 is the smallest pair that still triggers it.
+    renderer = make_renderer(max_template_source_bytes=1024)
+    app.dependency_overrides[get_renderer] = lambda: renderer
+    try:
+        response = client.post("/v1/render", json={"source": "x" * 2048}, headers=TOKEN)
+    finally:
+        del app.dependency_overrides[get_renderer]
+
+    assert response.status_code == 413
+    problem = response.json()
+    assert problem["code"] == "template_source_too_large"
+    # The same status as string_too_large below, and only this field says who has to act.
+    assert problem["origin"] == "template"
+
+
+def test_v1_publishes_the_service_origin_for_our_own_failure():
+    renderer = AsyncMock(spec=TypstRenderer)
+    renderer.render.side_effect = RenderError("Typst did not produce output file")
+    app.dependency_overrides[get_renderer] = lambda: renderer
+    try:
+        response = client.post("/v1/render", json={"source": "hello"}, headers=TOKEN)
+    finally:
+        del app.dependency_overrides[get_renderer]
+
+    assert response.status_code == 500
+    problem = response.json()
+    assert problem["code"] == "render_failed"
+    assert problem["origin"] == "service"
+
+
+def test_v1_publishes_the_request_origin_for_a_missing_token():
+    response = client.post("/v1/render", json={"source": "hello"})
+
+    assert response.status_code == 403
+    assert response.json()["origin"] == "request"

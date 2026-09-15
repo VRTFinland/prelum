@@ -1,4 +1,5 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from enum import StrEnum
 from http import HTTPStatus
 from typing import Literal, cast, override
 
@@ -27,9 +28,24 @@ def for_message(value: str, *, limit: int = _MESSAGE_VALUE_LIMIT) -> str:
     return f"{value[:limit]}…"
 
 
-def status_is_server_fault(status: HTTPStatus) -> bool:
-    """Whether a failure with this status is ours rather than the caller's, i.e. worth paging for."""
-    return status >= HTTPStatus.INTERNAL_SERVER_ERROR
+class Origin(StrEnum):
+    """What a failure is attributable to, published beside `code` on every problem body.
+
+    Status cannot carry this. Seven codes answer 413 and only some are the caller's doing, so a
+    caller that alerts on the rest has to keep its own list of codes — and such a list drifts in
+    silence, because both sides of the comparison are ours. A code added later classifies itself.
+    """
+
+    # The caller's own request, or the document it asked for.
+    request = "request"
+    # The inline template the caller shipped. Caller-side like `request`, and equally not ours: the
+    # split says which half of the same payload to fix, and neither value is worth paging for.
+    template = "template"
+    # Prelum is shedding load by design. Nothing is broken, so this is never an incident — which is
+    # why it cannot be folded into `service`.
+    capacity = "capacity"
+    # Prelum's own failure: the only value that should raise an alert.
+    service = "service"
 
 
 class AppError(Exception):
@@ -41,6 +57,10 @@ class AppError(Exception):
     # image is too large" from "the rendered document is too large" has nothing else to key on.
     # `title` is prose for humans and may be reworded; `code` is a published contract and may not.
     code: str = "internal_error"
+
+    # Defaults to the loud answer: a class that forgets to declare its origin pages us rather than
+    # quietly reporting our defect as the caller's. tests/test_error_codes.py refuses the default.
+    origin: Origin = Origin.service
 
     # Prose for humans. Never structured, never contractual: callers read `context` instead.
     detail: str
@@ -63,13 +83,18 @@ class AppError(Exception):
 
     @property
     def is_server_fault(self) -> bool:
-        return status_is_server_fault(self.status)
+        # Derived from origin rather than status so one classification drives both the published
+        # field and the log level that is the only path to Sentry. `service` is exactly the 5xx set,
+        # so this is the same answer status gave — it just cannot drift from what callers are told.
+        return self.origin is Origin.service
 
     def to_response(self, request: Request) -> JSONResponse:
-        # `context` is added after the standard members so a subclass cannot shadow `code` or
-        # `status`, and it is always present so callers never test for it before reading it.
+        # `context` is added after the standard members so a subclass cannot shadow `code`,
+        # `origin` or `status`, and it is always present so callers never test for it before
+        # reading it. `origin` is written as its value: a caller compares it to a string literal.
         body: dict[str, object] = {
             "code": self.code,
+            "origin": self.origin.value,
             "title": self.title,
             "status": self.status,
             "detail": self.detail,
@@ -87,24 +112,30 @@ class InvalidRequestError(AppError):
     status: HTTPStatus = HTTPStatus.BAD_REQUEST
     title: str = "Invalid Request"
     code: str = "invalid_request"
+    origin: Origin = Origin.request
 
 
 class UnsupportedFormatError(AppError):
     status: HTTPStatus = HTTPStatus.BAD_REQUEST
     title: str = "Unsupported Format"
     code: str = "unsupported_format"
+    origin: Origin = Origin.request
 
 
 class InvalidTemplatePathError(AppError):
     status: HTTPStatus = HTTPStatus.BAD_REQUEST
     title: str = "Invalid Template Path"
     code: str = "invalid_template_path"
+    # `request`, not `template`: a malformed `files` key is rejected in validation, before anything
+    # compiles, so the fault is in the request's structure rather than in Typst source.
+    origin: Origin = Origin.request
 
 
 class RenderError(AppError):
     status: HTTPStatus = HTTPStatus.INTERNAL_SERVER_ERROR
     title: str = "Render Failed"
     code: str = "render_failed"
+    origin: Origin = Origin.service
 
 
 class InlineTemplateError(AppError):
@@ -113,25 +144,28 @@ class InlineTemplateError(AppError):
     status: HTTPStatus = HTTPStatus.UNPROCESSABLE_ENTITY
     title: str = "Inline Template Failed"
     code: str = "template_compile_failed"
+    origin: Origin = Origin.template
 
 
 class ServiceUnavailableError(AppError):
     status: HTTPStatus = HTTPStatus.SERVICE_UNAVAILABLE
     title: str = "Service Unavailable"
     code: str = "service_unavailable"
+    origin: Origin = Origin.service
 
 
 class ServiceOverloadedError(AppError):
     """Raised when no render slot became free within the configured queue wait.
 
-    429 rather than 503 on purpose: `status_is_server_fault` treats everything from 500 up as an
-    incident, and shedding load is designed behaviour, not a fault. A busy service should not page
-    anyone. The Retry-After header travels with the response so the caller knows when to return.
+    429 rather than 503 on purpose: this class declares `Origin.capacity`, so `is_server_fault` is
+    false for it, and shedding load is designed behaviour, not a fault. A busy service should not
+    page anyone. The Retry-After header travels with the response so the caller knows when to return.
     """
 
     status: HTTPStatus = HTTPStatus.TOO_MANY_REQUESTS
     title: str = "Too Many Requests"
     code: str = "render_queue_full"
+    origin: Origin = Origin.capacity
 
     retry_after: int
 
@@ -150,24 +184,28 @@ class ForbiddenError(AppError):
     status: HTTPStatus = HTTPStatus.FORBIDDEN
     title: str = "Forbidden"
     code: str = "forbidden"
+    origin: Origin = Origin.request
 
 
 class NotFoundError(AppError):
     status: HTTPStatus = HTTPStatus.NOT_FOUND
     title: str = "Not Found"
     code: str = "not_found"
+    origin: Origin = Origin.request
 
 
 class MethodNotAllowedError(AppError):
     status: HTTPStatus = HTTPStatus.METHOD_NOT_ALLOWED
     title: str = "Method Not Allowed"
     code: str = "method_not_allowed"
+    origin: Origin = Origin.request
 
 
 class StringTooLargeError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "String Too Large"
     code: str = "string_too_large"
+    origin: Origin = Origin.request
 
     size: int
     limit: int
@@ -195,12 +233,14 @@ class InvalidFileDataError(AppError):
     status: HTTPStatus = HTTPStatus.BAD_REQUEST
     title: str = "Invalid File Data"
     code: str = "invalid_file_data"
+    origin: Origin = Origin.request
 
 
 class RequestTooLargeError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "Request Too Large"
     code: str = "request_too_large"
+    origin: Origin = Origin.request
 
     def __init__(self, *, limit: int, declared_size: int | None = None) -> None:
         # The body's true size is never known: the middleware stops reading at the limit. The only
@@ -215,6 +255,9 @@ class RenderTimeoutError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_TIMEOUT
     title: str = "Render Timeout"
     code: str = "render_timeout"
+    # `request`, not `service`: a slow host could also explain a 408, but render time is driven by
+    # the caller's own document, so the caller's side is the one that reads as the more likely cause.
+    origin: Origin = Origin.request
 
     def __init__(self, *, timeout_secs: int) -> None:
         super().__init__(f"Render timed out after {timeout_secs} seconds", context={"timeout_secs": timeout_secs})
@@ -224,6 +267,10 @@ class OutputTooLargeError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "Output Too Large"
     code: str = "output_too_large"
+    # The output is the caller's template and data together, so `template` would be as defensible.
+    # `request` wins because the caller reaches for `pages`, `data` and `output` first, and neither
+    # value pages anyone, so the choice is advisory. Same for TooManyOutputFilesError.
+    origin: Origin = Origin.request
 
     def __init__(self, *, size: int, limit: int) -> None:
         super().__init__(f"Output size {size} bytes exceeds limit {limit}", context={"size": size, "limit": limit})
@@ -235,6 +282,7 @@ class PageSelectionTooLargeError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "Page Selection Too Large"
     code: str = "page_selection_too_large"
+    origin: Origin = Origin.request
 
     def __init__(self, *, count: int, limit: int) -> None:
         super().__init__(
@@ -253,6 +301,7 @@ class TooManyOutputFilesError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "Too Many Output Files"
     code: str = "too_many_output_files"
+    origin: Origin = Origin.request
 
     def __init__(self, *, limit: int) -> None:
         super().__init__(f"Output file count exceeds limit {limit}", context={"limit": limit})
@@ -262,6 +311,7 @@ class TemplateSourceTooLargeError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "Template Too Large"
     code: str = "template_source_too_large"
+    origin: Origin = Origin.template
 
     def __init__(self, *, size: int, limit: int) -> None:
         super().__init__(
@@ -274,6 +324,7 @@ class TemplateFileTooLargeError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_ENTITY_TOO_LARGE
     title: str = "Template Too Large"
     code: str = "template_file_too_large"
+    origin: Origin = Origin.template
 
     def __init__(self, *, key: str, size: int, limit: int) -> None:
         # The prose shortens the key; the context carries it whole. It passed
@@ -300,3 +351,27 @@ def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     )
 
     return exc.to_response(request)
+
+
+def error_codes() -> list[dict[str, object]]:
+    """
+    Every published error code with its status and origin, for the documentation and its artefact.
+
+    Deployment-independent by construction: these are properties of the classes, not of a running
+    service. `AppError` itself is excluded — it carries `internal_error` and never reaches a caller,
+    since every 5xx arrives as `render_failed` or `service_unavailable`.
+    """
+
+    def descendants(cls: type[AppError]) -> Iterator[type[AppError]]:
+        for subclass in cls.__subclasses__():
+            if subclass.__module__ == __name__:
+                yield subclass
+            yield from descendants(subclass)
+
+    return sorted(
+        (
+            {"code": cls.code, "status": int(cls.status), "origin": cls.origin.value}
+            for cls in set(descendants(AppError))
+        ),
+        key=lambda entry: cast(str, entry["code"]),
+    )

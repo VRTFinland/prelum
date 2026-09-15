@@ -7,6 +7,8 @@ from typing import Annotated, ClassVar, Literal, LiteralString, cast
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
+from app.core.errors import Origin
+
 type JSONValue = str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | Mapping[str, JSONValue] | None
 
 
@@ -43,6 +45,14 @@ class PdfStandard(StrEnum):
 # document with a 200 response.
 _STRICT = ConfigDict(extra="forbid", frozen=True)
 
+# For the models that describe a response. They stay strict where they are validated — an undeclared
+# key reaching one from inside this service is our bug, and failing there is how it stays visible —
+# but the schema they publish must not repeat that promise to a caller. `extra="forbid"` exports
+# `additionalProperties: false`, which says the body is final; a response may gain a field within the
+# same API version, as `origin` did, and a client is expected to ignore what it does not recognise.
+# The override states that openness in the published document without loosening validation here.
+_STRICT_OPEN_SCHEMA = ConfigDict(extra="forbid", frozen=True, json_schema_extra={"additionalProperties": True})
+
 
 class RenderFile(BaseModel):
     encoding: Literal["text", "base64"]
@@ -60,13 +70,14 @@ class Problem(BaseModel):
     """
 
     code: str
+    origin: Origin
     title: str
     status: int
     detail: str
     instance: str
     context: dict[str, object]
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintSetRule(BaseModel):
@@ -76,7 +87,7 @@ class ConstraintSetRule(BaseModel):
     error_code: str
     description: str
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintConformanceVector(BaseModel):
@@ -87,7 +98,7 @@ class ConstraintConformanceVector(BaseModel):
     code: str | None = None
     rule: str | None = None
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintLimits(BaseModel):
@@ -102,7 +113,7 @@ class ConstraintLimits(BaseModel):
     max_output_bytes: int
     max_output_files: int
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class ConstraintsResponse(BaseModel):
@@ -123,7 +134,7 @@ class ConstraintsResponse(BaseModel):
     conformance_vectors: list[ConstraintConformanceVector]
     limits: ConstraintLimits
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 class _RenderOutputBase(BaseModel):

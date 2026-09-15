@@ -24,6 +24,7 @@ docs/superpowers/plans/
 # Generated documentation artefacts
 docs/api/openapi.json
 docs/api/files-key-rules.json
+docs/api/error-codes.json
 docs/examples/
 site/
 

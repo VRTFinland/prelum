@@ -14,7 +14,7 @@ import pytest
 
 from app import deps
 from app.core.config import Settings
-from app.core.errors import ServiceOverloadedError
+from app.core.errors import Origin, ServiceOverloadedError
 from app.main import create_app
 from app.render.renderer import RenderResult
 
@@ -162,3 +162,16 @@ def test_service_overloaded_error_is_not_a_server_fault():
 
     assert error.status == 429
     assert error.is_server_fault is False
+    # `capacity`, not `service`: a caller alerting on origin == "service" must not alert on load.
+    assert error.origin is Origin.capacity
+
+
+@pytest.mark.asyncio
+async def test_a_shed_response_is_attributed_to_capacity(shedding_app):
+    exhausted = asyncio.Semaphore(1)
+    await exhausted.acquire()
+
+    response = await _post(shedding_app, exhausted)
+
+    assert response.status_code == 429
+    assert response.json()["origin"] == "capacity"
