@@ -177,9 +177,12 @@ def test_error_codes_export_publishes_the_taxonomy_without_deployment_configurat
 
 def test_makefile_generates_the_error_codes_artefact_for_the_site():
     makefile = MAKEFILE.read_text(encoding="utf-8")
+    phony = next(line for line in makefile.splitlines() if line.startswith(".PHONY:"))
 
     assert "python -m scripts.export_error_codes" in makefile
     assert "docs-build: docs-examples docs-openapi docs-constraints docs-error-codes" in makefile
+    assert "docs-serve: docs-examples docs-openapi docs-constraints docs-error-codes" in makefile
+    assert "docs-error-codes" in phony.split()
 
 
 def test_the_generated_error_codes_artefact_is_not_committed():
