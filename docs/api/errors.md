@@ -75,7 +75,7 @@ text before shortening, so these fields can always be encoded as UTF-8.
 | `declared_size` | integer | The `Content-Length` the caller sent; not a measurement |
 | `timeout_secs` | integer | The configured render timeout in seconds |
 | `retry_after` | integer | Seconds to wait before retrying, equal to the `Retry-After` header |
-| `errors` | array | Request validation errors as `{loc, msg, type}`, at most 20 of them. `loc` is shortened like `path`: string segments over 80 characters end in `…`, array indices stay integers. `msg` is prose that may quote the offending value, and is shortened the same way past 200 characters |
+| `errors` | array | Request validation errors as `{loc, msg, type}`, at most 20 of them. `loc` is shortened like `path`: string segments over 80 characters end in `…`, array indices stay integers. `msg` is prose that may quote the offending value, and is shortened the same way past 200 characters. Like `detail`, it may be reworded — including its leading words — so branch on `type`, or on `context.rule` where one is given |
 | `errors_total` | integer | How many validation errors there were, present only when `errors` holds fewer than that |
 
 ## Codes
