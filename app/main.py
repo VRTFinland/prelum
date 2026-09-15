@@ -233,7 +233,7 @@ def create_app() -> FastAPI:
 
     _verify_render_memory_limit(settings)
 
-    app: FastAPI = FastAPI(title="Prelum", version="1.0.1")
+    app: FastAPI = FastAPI(title="Prelum", version="1.1.0")
     app.include_router(router)
     app.add_middleware(BodyLimitMiddleware, max_body=settings.max_request_body_bytes)
 

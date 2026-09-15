@@ -49,7 +49,7 @@ spec:
         runAsGroup: 10001
       containers:
         - name: prelum
-          image: ghcr.io/vrtfinland/prelum:1.0.1
+          image: ghcr.io/vrtfinland/prelum:1.1.0
           ports:
             - containerPort: 9870
           env:
