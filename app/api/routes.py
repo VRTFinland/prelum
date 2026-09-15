@@ -91,7 +91,7 @@ _RENDER_RESPONSES: dict[int | str, dict[str, Any]] = {
 }
 
 _CONSTRAINTS_RESPONSES: dict[int | str, dict[str, Any]] = {
-    200: {"description": "Published files-key rules and this instance's limits"},
+    200: {"description": "Published files-key rules, output-option rules and this instance's limits"},
     403: {
         "description": "Problem response",
         "content": {"application/problem+json": {"schema": _PROBLEM_SCHEMA}},
@@ -145,7 +145,8 @@ async def constraints(
     _token: Annotated[None, Depends(require_api_token)],
 ) -> ConstraintsResponse:
     """
-    Publish the files-key rules and this instance's limits, so a caller validates before dispatch.
+    Publish the files-key and output-option rules with this instance's limits, so a caller can
+    validate before dispatch.
 
     Authenticated because the limits describe the deployment's operational configuration. The
     response is a pure function of published constants and Settings: no body is read, no permit is

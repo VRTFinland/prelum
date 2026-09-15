@@ -5,9 +5,11 @@ import pytest
 
 from app.core.constraints import files_key_rules
 from app.core.errors import Origin, error_codes
+from app.core.output_rules import output_rules
 from scripts.export_constraints import export_constraints
 from scripts.export_error_codes import export_error_codes
 from scripts.export_openapi import export_openapi
+from scripts.export_output_rules import export_output_rules
 
 ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = ROOT / "Makefile"
@@ -48,8 +50,14 @@ def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Pat
         "set_rules",
         "conformance_vectors",
         "limits",
+        "output_rules",
     } <= set(constraints_schema["required"])
     assert constraints_schema["properties"]["limits"] == {"$ref": "#/components/schemas/ConstraintLimits"}
+    assert constraints_schema["properties"]["output_rules"] == {"$ref": "#/components/schemas/OutputRulesDocument"}
+    output_rules_schema = schema["components"]["schemas"]["OutputRulesDocument"]
+    assert {"output_rules_version", "pdf", "image", "page_selection", "rules", "conformance_vectors"} <= set(
+        output_rules_schema["required"]
+    )
 
     responses = schema["paths"]["/v1/render"]["post"]["responses"]
     assert set(responses["200"]["content"]) == {
@@ -113,6 +121,40 @@ def test_constraints_export_publishes_the_rules_without_deployment_configuration
     assert document == files_key_rules()
     assert "limits" not in document, "the static artefact must not imply a deployment's limits"
     assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
+
+
+def test_output_rules_export_publishes_the_same_document_the_endpoint_nests(tmp_path: Path):
+    """A second spelling of the rules would be the drift the artefact exists to catch."""
+    destination = tmp_path / "output-rules.json"
+
+    export_output_rules(destination)
+
+    document = json.loads(destination.read_text(encoding="utf-8"))
+    assert document == output_rules()
+    assert "limits" not in document, "the output rules are a property of the code, not of a deployment"
+    assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
+
+
+def test_makefile_generates_the_output_rules_artefact_for_the_site():
+    makefile = MAKEFILE.read_text(encoding="utf-8")
+    phony = next(line for line in makefile.splitlines() if line.startswith(".PHONY:"))
+
+    assert "python -m scripts.export_output_rules" in makefile
+    assert "docs-build: docs-examples docs-openapi docs-constraints docs-error-codes docs-output-rules" in makefile
+    assert "docs-serve: docs-examples docs-openapi docs-constraints docs-error-codes docs-output-rules" in makefile
+    assert "docs-output-rules" in phony.split()
+
+
+def test_the_generated_output_rules_artefact_is_not_committed():
+    """Built by docs-build like its three siblings; a tracked copy would go stale in review.
+
+    Checked against a checkout only, for the reason the error-codes test below gives.
+    """
+    gitignore_path = ROOT / ".gitignore"
+    if not gitignore_path.exists():
+        pytest.skip("no .gitignore: running against the image rather than a checkout")
+
+    assert "docs/api/output-rules.json" in gitignore_path.read_text(encoding="utf-8")
 
 
 def test_makefile_generates_the_constraints_artefact_for_the_site():

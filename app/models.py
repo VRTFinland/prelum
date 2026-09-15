@@ -116,6 +116,87 @@ class ConstraintLimits(BaseModel):
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
+class OutputRule(BaseModel):
+    """One output-option rule that needs more than one field to decide, named by its stable id."""
+
+    id: str
+    error_code: str
+    description: str
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class OutputConformanceVector(BaseModel):
+    """An executable accepted or rejected `output` object for an output-rules mirror."""
+
+    output: dict[str, object]
+    accepted: bool
+    code: str | None = None
+    # Absent where a field-level rule refused the object: the OpenAPI schema states those, and
+    # Pydantic's own error type already tells them apart, so they carry no id of ours.
+    rule: str | None = None
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PngOutputRules(BaseModel):
+    """The bounds PNG output applies to `ppi`, and the value it uses when none is given."""
+
+    min_ppi: int
+    max_ppi: int
+    default_ppi: int
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class ImageOutputRules(BaseModel):
+    """What PNG and SVG output accept beyond the fields every output shares."""
+
+    archives: list[str]
+    min_page: int
+    png: PngOutputRules
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PdfOutputRules(BaseModel):
+    """The PDF vocabulary, with the two lookup tables a mirror would otherwise transcribe."""
+
+    versions: list[str]
+    standards: list[str]
+    max_standards: int
+    pdf_a_version: dict[str, str]
+    tagged_standards: list[str]
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PageSelectionRules(BaseModel):
+    """The `pages` grammar, shared by PDF output and an image archive."""
+
+    max_length: int
+    max_selections: int
+    selection_pattern: str
+    selection_pattern_flavour: Literal["pcre"]
+    selection_pattern_matches_whole_selection: bool
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class OutputRulesDocument(BaseModel):
+    """The deployment-independent output-option contract, also exported as output-rules.json."""
+
+    output_rules_version: int
+    formats: list[str]
+    pdf: PdfOutputRules
+    image: ImageOutputRules
+    page_selection: PageSelectionRules
+    rules: list[OutputRule]
+    conformance_vectors: list[OutputConformanceVector]
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
 class ConstraintsResponse(BaseModel):
     """The complete client contract returned by ``GET /v1/constraints``."""
 
@@ -133,6 +214,11 @@ class ConstraintsResponse(BaseModel):
     set_rules: list[ConstraintSetRule]
     conformance_vectors: list[ConstraintConformanceVector]
     limits: ConstraintLimits
+    # Nested rather than merged into this document's own fields, and carrying its own version
+    # counter: the two rule sets change at different rates, so a shared `rules_version` would send
+    # a caller back through the key rules because a PDF standard was added. One fetch still answers
+    # both, which merging was the only other way to achieve.
+    output_rules: OutputRulesDocument
 
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
@@ -184,7 +270,7 @@ PDF_A_VERSION = {
 }
 
 
-class OutputRule(StrEnum):
+class OutputRuleId(StrEnum):
     """
     The published id of every output-option rule this module enforces.
 
@@ -209,7 +295,7 @@ class OutputRule(StrEnum):
     page_range_end_precedes_start = "page_range_end_precedes_start"
 
 
-def _reject(rule: OutputRule, message: str) -> NoReturn:
+def _reject(rule: OutputRuleId, message: str) -> NoReturn:
     """
     Fail validation with the id of the rule that fired carried beside its prose.
 
@@ -239,7 +325,7 @@ class PageSelectionLimitError(ValueError):
 
 def parse_page_selection(value: str) -> tuple[PageRange, ...]:
     if len(value) > MAX_PAGE_SELECTION_LENGTH:
-        _reject(OutputRule.page_selection_too_long, f"pages must not exceed {MAX_PAGE_SELECTION_LENGTH} characters")
+        _reject(OutputRuleId.page_selection_too_long, f"pages must not exceed {MAX_PAGE_SELECTION_LENGTH} characters")
 
     selections = value.split(",")
     # Counted before the selections are matched, rather than beside them: the count is the cheap
@@ -247,12 +333,12 @@ def parse_page_selection(value: str) -> tuple[PageRange, ...]:
     # so a value breaking both has to name the one that bounds the work the other would do.
     if len(selections) > MAX_PAGE_SELECTION_SEGMENTS:
         _reject(
-            OutputRule.page_selection_too_many_segments,
+            OutputRuleId.page_selection_too_many_segments,
             f"pages must not exceed {MAX_PAGE_SELECTION_SEGMENTS} comma-separated selections",
         )
     if any(_PAGE_RANGE.fullmatch(selection) is None for selection in selections):
         _reject(
-            OutputRule.page_selection_malformed,
+            OutputRuleId.page_selection_malformed,
             "pages must be a comma-separated list of positive pages or ranges",
         )
 
@@ -267,7 +353,7 @@ def parse_page_selection(value: str) -> tuple[PageRange, ...]:
         start = int(start_text)
         end = int(end_text) if end_text else None
         if end is not None and end < start:
-            _reject(OutputRule.page_range_end_precedes_start, "page range end must not precede its start")
+            _reject(OutputRuleId.page_range_end_precedes_start, "page range end must not precede its start")
         ranges.append(PageRange(start, end))
 
     return tuple(ranges)
@@ -324,24 +410,24 @@ class PdfOutput(_RenderOutputBase):
     @model_validator(mode="after")
     def validate_pdf_options(self) -> PdfOutput:
         if len(set(self.standards)) != len(self.standards):
-            _reject(OutputRule.duplicate_standards, "PDF standards must not contain duplicates")
+            _reject(OutputRuleId.duplicate_standards, "PDF standards must not contain duplicates")
 
         pdf_a = [standard for standard in self.standards if standard in PDF_A_VERSION]
         if len(pdf_a) > 1:
-            _reject(OutputRule.multiple_pdf_a_standards, "Only one PDF/A standard can be selected")
+            _reject(OutputRuleId.multiple_pdf_a_standards, "Only one PDF/A standard can be selected")
         if PdfStandard.ua_1 in self.standards and any(standard.value.startswith("a-4") for standard in pdf_a):
-            _reject(OutputRule.ua_1_with_pdf_a_4, "PDF/UA-1 is incompatible with PDF/A-4")
+            _reject(OutputRuleId.ua_1_with_pdf_a_4, "PDF/UA-1 is incompatible with PDF/A-4")
 
         if self.version is not None and pdf_a and self.version != PDF_A_VERSION[pdf_a[0]]:
             _reject(
-                OutputRule.version_conflicts_with_standard,
+                OutputRuleId.version_conflicts_with_standard,
                 f"{pdf_a[0].value} requires PDF version {PDF_A_VERSION[pdf_a[0]].value}",
             )
         if self.version == PdfVersion.v2_0 and PdfStandard.ua_1 in self.standards:
-            _reject(OutputRule.ua_1_with_pdf_2_0, "PDF/UA-1 is incompatible with PDF 2.0")
+            _reject(OutputRuleId.ua_1_with_pdf_2_0, "PDF/UA-1 is incompatible with PDF 2.0")
         if self.pages is not None and TAGGED_PDF_STANDARDS.intersection(self.standards):
             _reject(
-                OutputRule.pages_with_tagged_standard,
+                OutputRuleId.pages_with_tagged_standard,
                 "PDF page selection cannot be combined with a standard that requires tagging",
             )
 
@@ -356,9 +442,9 @@ class _ImageOutputBase(_RenderOutputBase):
     @model_validator(mode="after")
     def validate_image_options(self) -> _ImageOutputBase:
         if self.archive is None and self.pages is not None:
-            _reject(OutputRule.pages_requires_archive, "pages requires archive 'zip'")
+            _reject(OutputRuleId.pages_requires_archive, "pages requires archive 'zip'")
         if self.archive is not None and self.page is not None:
-            _reject(OutputRule.page_with_archive, "page cannot be combined with an archive")
+            _reject(OutputRuleId.page_with_archive, "page cannot be combined with an archive")
         return self
 
 

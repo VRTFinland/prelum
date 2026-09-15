@@ -26,7 +26,7 @@ from app.models import (
     TAGGED_PDF_STANDARDS,
     ArchiveFormat,
     OutputFormat,
-    OutputRule,
+    OutputRuleId,
     PdfStandard,
     PdfVersion,
 )
@@ -41,12 +41,12 @@ OUTPUT_RULES_VERSION = 1
 # `invalid_request` at the same `loc`, so without the id only the prose distinguished them.
 RULES: list[dict[str, str]] = [
     {
-        "id": OutputRule.duplicate_standards.value,
+        "id": OutputRuleId.duplicate_standards.value,
         "error_code": "invalid_request",
         "description": "pdf.standards must not name the same standard twice.",
     },
     {
-        "id": OutputRule.multiple_pdf_a_standards.value,
+        "id": OutputRuleId.multiple_pdf_a_standards.value,
         "error_code": "invalid_request",
         "description": (
             "At most one PDF/A standard — one entry of pdf_a_version — may be selected. The second "
@@ -54,12 +54,12 @@ RULES: list[dict[str, str]] = [
         ),
     },
     {
-        "id": OutputRule.ua_1_with_pdf_a_4.value,
+        "id": OutputRuleId.ua_1_with_pdf_a_4.value,
         "error_code": "invalid_request",
         "description": "ua-1 cannot be combined with a PDF/A-4 profile: a-4, a-4f or a-4e.",
     },
     {
-        "id": OutputRule.version_conflicts_with_standard.value,
+        "id": OutputRuleId.version_conflicts_with_standard.value,
         "error_code": "invalid_request",
         "description": (
             "An explicit pdf.version must equal the version the selected PDF/A standard requires, "
@@ -68,12 +68,12 @@ RULES: list[dict[str, str]] = [
         ),
     },
     {
-        "id": OutputRule.ua_1_with_pdf_2_0.value,
+        "id": OutputRuleId.ua_1_with_pdf_2_0.value,
         "error_code": "invalid_request",
         "description": "ua-1 cannot be combined with an explicit pdf.version of 2.0.",
     },
     {
-        "id": OutputRule.pages_with_tagged_standard.value,
+        "id": OutputRuleId.pages_with_tagged_standard.value,
         "error_code": "invalid_request",
         "description": (
             "pdf.pages cannot be combined with a standard that requires tagging — an entry of "
@@ -81,22 +81,22 @@ RULES: list[dict[str, str]] = [
         ),
     },
     {
-        "id": OutputRule.pages_requires_archive.value,
+        "id": OutputRuleId.pages_requires_archive.value,
         "error_code": "invalid_request",
         "description": "An image output's pages requires archive: a single image file holds one page.",
     },
     {
-        "id": OutputRule.page_with_archive.value,
+        "id": OutputRuleId.page_with_archive.value,
         "error_code": "invalid_request",
         "description": "An image output's page cannot be combined with archive; select pages instead.",
     },
     {
-        "id": OutputRule.page_selection_too_long.value,
+        "id": OutputRuleId.page_selection_too_long.value,
         "error_code": "invalid_request",
         "description": f"pages must not exceed max_length ({MAX_PAGE_SELECTION_LENGTH}) characters.",
     },
     {
-        "id": OutputRule.page_selection_too_many_segments.value,
+        "id": OutputRuleId.page_selection_too_many_segments.value,
         "error_code": "invalid_request",
         "description": (
             f"pages must not exceed max_selections ({MAX_PAGE_SELECTION_SEGMENTS}) comma-separated "
@@ -105,7 +105,7 @@ RULES: list[dict[str, str]] = [
         ),
     },
     {
-        "id": OutputRule.page_selection_malformed.value,
+        "id": OutputRuleId.page_selection_malformed.value,
         "error_code": "invalid_request",
         "description": (
             "Every comma-separated selection in pages must match selection_pattern in full. The "
@@ -113,7 +113,7 @@ RULES: list[dict[str, str]] = [
         ),
     },
     {
-        "id": OutputRule.page_range_end_precedes_start.value,
+        "id": OutputRuleId.page_range_end_precedes_start.value,
         "error_code": "invalid_request",
         "description": "A closed range in pages must not end before it starts.",
     },
@@ -145,67 +145,67 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "output": {"format": "pdf", "standards": ["a-2b", "a-2b"]},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.duplicate_standards.value,
+        "rule": OutputRuleId.duplicate_standards.value,
     },
     {
         "output": {"format": "pdf", "standards": ["a-2b", "a-3b"]},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.multiple_pdf_a_standards.value,
+        "rule": OutputRuleId.multiple_pdf_a_standards.value,
     },
     {
         "output": {"format": "pdf", "standards": ["a-4", "ua-1"]},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.ua_1_with_pdf_a_4.value,
+        "rule": OutputRuleId.ua_1_with_pdf_a_4.value,
     },
     {
         "output": {"format": "pdf", "version": "1.4", "standards": ["a-2b"]},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.version_conflicts_with_standard.value,
+        "rule": OutputRuleId.version_conflicts_with_standard.value,
     },
     {
         "output": {"format": "pdf", "version": "2.0", "standards": ["ua-1"]},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.ua_1_with_pdf_2_0.value,
+        "rule": OutputRuleId.ua_1_with_pdf_2_0.value,
     },
     {
         "output": {"format": "pdf", "standards": ["a-1a"], "pages": "1"},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.pages_with_tagged_standard.value,
+        "rule": OutputRuleId.pages_with_tagged_standard.value,
     },
     {
         "output": {"format": "png", "pages": "1-2"},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.pages_requires_archive.value,
+        "rule": OutputRuleId.pages_requires_archive.value,
     },
     {
         "output": {"format": "png", "archive": "zip", "page": 1},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_with_archive.value,
+        "rule": OutputRuleId.page_with_archive.value,
     },
     {
         "output": {"format": "pdf", "pages": "1" + ",1" * MAX_PAGE_SELECTION_LENGTH},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_selection_too_long.value,
+        "rule": OutputRuleId.page_selection_too_long.value,
     },
     {
         "output": {"format": "pdf", "pages": ",".join(["1"] * (MAX_PAGE_SELECTION_SEGMENTS + 1))},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_selection_too_many_segments.value,
+        "rule": OutputRuleId.page_selection_too_many_segments.value,
     },
     {
         "output": {"format": "pdf", "pages": "1-a"},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_selection_malformed.value,
+        "rule": OutputRuleId.page_selection_malformed.value,
     },
     # Selections are matched whole. A mirror that anchors selection_pattern with '^' and '$'
     # instead accepts this one, because in Python, PCRE and Java '$' also matches before a trailing
@@ -214,7 +214,7 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "output": {"format": "pdf", "pages": "1\n"},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_selection_malformed.value,
+        "rule": OutputRuleId.page_selection_malformed.value,
     },
     # Space after the comma. The grammar has no optional whitespace, and a mirror that trims each
     # selection before matching accepts a value the service refuses.
@@ -222,13 +222,13 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "output": {"format": "pdf", "pages": "1, 2"},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_selection_malformed.value,
+        "rule": OutputRuleId.page_selection_malformed.value,
     },
     {
         "output": {"format": "pdf", "pages": "3-2"},
         "accepted": False,
         "code": "invalid_request",
-        "rule": OutputRule.page_range_end_precedes_start.value,
+        "rule": OutputRuleId.page_range_end_precedes_start.value,
     },
     # Field-level rules from here on: the schema states each one, and the rejection carries no rule
     # id because Pydantic's own error type already tells them apart.

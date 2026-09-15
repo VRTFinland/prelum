@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from app import deps
 from app.core.errors import InlineTemplateError
+from app.core.output_rules import output_rules as published_output_rules
 from app.main import app, create_app
 from app.render.renderer import RenderResult, TypstRenderer
 from app.render.templates import MAX_INLINE_FILE_KEYS
@@ -204,6 +205,28 @@ def test_constraints_publishes_the_rules_and_this_instance_limits():
     assert document["limits"]["max_inline_files"] == 64
     assert "code" not in document["conformance_vectors"][0]
     assert "rule" not in document["conformance_vectors"][0]
+
+
+def test_constraints_publishes_the_output_rules_under_their_own_version():
+    """One fetch answers both contracts, but each keeps its own counter.
+
+    A shared rules_version would send a caller back through the key rules because a PDF standard
+    was added, and back through the output rules because a key rule changed.
+    """
+    document = client.get("/v1/constraints", headers=TOKEN).json()
+
+    output_rules = document["output_rules"]
+    assert output_rules == published_output_rules()
+    assert "rules_version" not in output_rules
+    assert output_rules["output_rules_version"] >= 1
+    assert document["rules_version"] != output_rules["output_rules_version"]
+    # The tables a mirror cannot derive, and the grammar behind `pages`.
+    assert output_rules["pdf"]["pdf_a_version"]["a-2b"] == "1.7"
+    assert output_rules["pdf"]["tagged_standards"] == ["a-1a", "a-2a", "a-3a", "ua-1"]
+    assert output_rules["page_selection"]["max_selections"] == 64
+    # exclude_none reaches the nested document too: an accepted vector carries no rejection fields.
+    accepted = next(vector for vector in output_rules["conformance_vectors"] if vector["accepted"])
+    assert set(accepted) == {"output", "accepted"}
 
 
 def test_constraints_reflects_the_deployment_rather_than_the_defaults(monkeypatch: pytest.MonkeyPatch):
