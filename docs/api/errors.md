@@ -1,8 +1,9 @@
 # Handle errors
 
-When Prelum cannot render a request, it returns JSON describing what went wrong. A client normally
-needs to do only two things: use the HTTP status and stable `code` to decide what to do, then show
-the human-readable `detail` to the user.
+When Prelum cannot render a request, it returns JSON describing what went wrong. Alongside the HTTP
+status and stable `code`, every response names `origin`: whose failure this is, so a client can
+decide without keeping its own list of codes — see "Whose failure it is" below for the detail. The
+human-readable `detail` field is for showing the user, not for branching on.
 
 Typical responses fall into these groups:
 
@@ -89,6 +90,16 @@ text before shortening, so these fields can always be encoded as UTF-8.
 | 500 | `render_failed` | `service` | — | Typst was killed by a signal the render's own memory limit does not explain, or reported success but produced no expected output |
 | 503 | `service_unavailable` | `service` | — | Unexpected service or infrastructure failure |
 
+`invalid_file_data` carries `key` when one `files` entry is at fault — malformed base64, text that
+is not UTF-8, a key that escapes the project root or collides with another in case or as a
+directory, or a layout that cannot be written — and `count` with `limit` when there are too many
+entries. Non-UTF-8 `source` carries neither. `errors` accompanies these fields only for the causes
+request validation detects (the key collisions and the structural key-count cap); the causes the
+renderer detects have no validation error list to publish. `invalid_template_path` never carries the key: it has not passed validation, so it is not
+echoed; `detail` names it, shortened.
+
+A 429 includes `Retry-After`; callers should wait at least that many seconds before retrying.
+
 ## Whose failure it is
 
 `origin` says what a failure is attributable to, so a client decides with one field instead of
@@ -108,16 +119,6 @@ that pages on it pages on ordinary load.
 `request` and `template` are both the client's side of the exchange — `source` and `files` arrive in
 the same body — so the split says which half to correct, not which is more serious. Neither is ever
 Prelum's failure.
-
-`invalid_file_data` carries `key` when one `files` entry is at fault — malformed base64, text that
-is not UTF-8, a key that escapes the project root or collides with another in case or as a
-directory, or a layout that cannot be written — and `count` with `limit` when there are too many
-entries. Non-UTF-8 `source` carries neither. `errors` accompanies these fields only for the causes
-request validation detects (the key collisions and the structural key-count cap); the causes the
-renderer detects have no validation error list to publish. `invalid_template_path` never carries the key: it has not passed validation, so it is not
-echoed; `detail` names it, shortened.
-
-A 429 includes `Retry-After`; callers should wait at least that many seconds before retrying.
 
 The complete mapping is published as [`error-codes.json`](error-codes.json): every code with its
 status and origin, generated from the service's own definitions.

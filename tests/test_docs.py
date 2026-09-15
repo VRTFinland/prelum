@@ -129,15 +129,21 @@ def test_openapi_publishes_the_error_origin_and_its_values(tmp_path: Path):
     schema = json.loads(destination.read_text(encoding="utf-8"))
     # routes.py inlines Problem.model_json_schema() straight into each error response instead of
     # routing it through FastAPI's response_model machinery, so it never reaches
-    # components.schemas as a named "Problem" component. Assert against the schema the error
-    # responses actually carry.
+    # components.schemas as a named "Problem" component. _PROBLEM_SCHEMA is built once in routes.py
+    # and reused by reference for every error response on both /v1/render and /v1/constraints, so
+    # asserting on one response's schema covers them all.
     problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"][
         "schema"
     ]
     assert "origin" in problem["required"]
-    # The enum lives in a local $defs entry alongside the inlined schema, not under components.schemas.
-    referenced = problem["properties"]["origin"]["$ref"].rsplit("/", 1)[-1]
-    assert set(problem["$defs"][referenced]["enum"]) == {origin.value for origin in Origin}
+    # routes.py resolves each property's $defs reference before inlining the schema, since a $ref to
+    # a sibling $defs entry would dangle once this schema sits under a response rather than under
+    # components.schemas. The enum body must therefore appear directly on the property, and no
+    # $ref/$defs pair may survive anywhere in the exported document — that dangling reference is
+    # exactly the regression this test exists to catch.
+    assert set(problem["properties"]["origin"]["enum"]) == {origin.value for origin in Origin}
+    assert "$defs" not in problem
+    assert "#/$defs/" not in json.dumps(schema)
 
 
 def _documented_codes() -> dict[str, tuple[int, str]]:

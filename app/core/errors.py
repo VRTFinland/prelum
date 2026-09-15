@@ -255,6 +255,8 @@ class RenderTimeoutError(AppError):
     status: HTTPStatus = HTTPStatus.REQUEST_TIMEOUT
     title: str = "Render Timeout"
     code: str = "render_timeout"
+    # `request`, not `service`: a slow host could also explain a 408, but render time is driven by
+    # the caller's own document, so the caller's side is the one that reads as the more likely cause.
     origin: Origin = Origin.request
 
     def __init__(self, *, timeout_secs: int) -> None:

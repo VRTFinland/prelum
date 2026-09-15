@@ -140,7 +140,7 @@ _CONTEXT_CONTRACT: list[tuple[AppError, frozenset[str]]] = [
     (ServiceUnavailableError("bad"), frozenset()),
 ]
 
-_STANDARD_MEMBERS = {"code", "title", "status", "detail", "instance", "context"}
+_STANDARD_MEMBERS = {"code", "origin", "title", "status", "detail", "instance", "context"}
 
 
 @pytest.mark.parametrize(("error", "keys"), _CONTEXT_CONTRACT, ids=lambda item: getattr(item, "code", None))
