@@ -253,7 +253,7 @@ class TypstRenderer:
         the model layer. The escape check below asserts that already-proven invariant on a security
         boundary; the errno filter covers what only the filesystem can refuse.
 
-        :param project_root: Already created; the escape check below is measured against it.
+        :param project_root: Already created by the caller.
         :raises InvalidFileDataError: If there are too many entries, base64 content is malformed, a key
             escapes the project root, two keys differ only in case, or the keys describe a layout
             that cannot be written.
@@ -592,8 +592,6 @@ class TypstRenderer:
         the limit unset and exit 127. The "--" terminator keeps typst's own flags out of prlimit's
         option parsing. And prlimit execs its target rather than forking it, so proc.kill() and the
         return code below still refer to typst itself, signal and all.
-
-        :return: The argv prefix, empty when PRELUM_MAX_RENDER_MEMORY_BYTES is unset.
         """
         limit = self.settings.max_render_memory_bytes
         if limit is None:

@@ -99,9 +99,9 @@ def validate_inline_file_key(key: str) -> str:
     """
     Validate one caller-supplied files key, which the renderer turns into a file path.
 
-    An accepted key comes back unchanged and is safe to append to the render project root; each
-    check below says what it rules out. POSIX semantics are applied on every platform, so the
-    guarantee is a property of this function rather than of the deployment target.
+    An accepted key comes back unchanged and is safe to append to the render project root. POSIX
+    semantics are applied on every platform, so the guarantee is a property of this function rather
+    than of the deployment target.
 
     There is no rule protecting the inline entry point: INLINE_TEMPLATE_FILENAME holds a character
     outside SAFE_FILENAME_CHARS, so the character check below already makes every spelling of it
