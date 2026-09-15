@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 from app.core.constraints import files_key_rules
-from app.core.errors import Origin
+from app.core.errors import Origin, error_codes
 from scripts.export_constraints import export_constraints
 from scripts.export_openapi import export_openapi
 
@@ -10,6 +10,7 @@ ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = ROOT / "Makefile"
 DOCS_CONFIG = ROOT / "zensical.toml"
 PYPROJECT = ROOT / "pyproject.toml"
+ERRORS_DOC = ROOT / "docs" / "api" / "errors.md"
 
 
 def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Path):
@@ -136,3 +137,24 @@ def test_openapi_publishes_the_error_origin_and_its_values(tmp_path: Path):
     # The enum lives in a local $defs entry alongside the inlined schema, not under components.schemas.
     referenced = problem["properties"]["origin"]["$ref"].rsplit("/", 1)[-1]
     assert set(problem["$defs"][referenced]["enum"]) == {origin.value for origin in Origin}
+
+
+def _documented_codes() -> dict[str, tuple[int, str]]:
+    """Parse the Codes table into {code: (status, origin)}."""
+    section = ERRORS_DOC.read_text(encoding="utf-8").split("## Codes", 1)[1]
+    documented: dict[str, tuple[int, str]] = {}
+    for line in section.splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 5 or not cells[0].isdigit():
+            continue
+        documented[cells[1].strip("`")] = (int(cells[0]), cells[2].strip("`"))
+    return documented
+
+
+def test_every_error_code_is_documented_with_its_status_and_origin():
+    """The table is what a caller reads instead of the source; a drifting row is the whole bug."""
+    expected = {entry["code"]: (entry["status"], entry["origin"]) for entry in error_codes()}
+
+    assert _documented_codes() == expected

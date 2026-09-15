@@ -33,6 +33,7 @@ from app.core.errors import (
     TemplateSourceTooLargeError,
     TooManyOutputFilesError,
     UnsupportedFormatError,
+    error_codes,
 )
 
 
@@ -233,3 +234,8 @@ def test_the_413_family_is_split_by_origin():
     assert OutputTooLargeError.origin is Origin.request
     assert PageSelectionTooLargeError.origin is Origin.request
     assert TooManyOutputFilesError.origin is Origin.request
+
+
+def test_error_codes_covers_exactly_the_error_classes():
+    """The documentation and the artefact are generated from this; a class it misses is invisible."""
+    assert {entry["code"] for entry in error_codes()} == {cls.code for cls in _error_classes()}

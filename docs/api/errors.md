@@ -22,6 +22,7 @@ Every error uses `application/problem+json` and has the same top-level fields:
 ```json
 {
   "code": "template_file_too_large",
+  "origin": "template",
   "title": "Template Too Large",
   "status": 413,
   "detail": "Template file 'assets/logo.png' size 1500000 bytes exceeds limit 1048576",
@@ -66,27 +67,47 @@ text before shortening, so these fields can always be encoded as UTF-8.
 
 ## Codes
 
-| Status | `code` | `context` | Cause |
-| ---: | --- | --- | --- |
-| 400 | `invalid_request` | `errors`, absent when the body could not be parsed at all | Missing, malformed, unknown or format-inappropriate request field, or a body no JSON parser accepts |
-| 400 | `unsupported_format` | `errors` | `format` outside `pdf`, `svg` and `png` |
-| 400 | `invalid_template_path` | `errors` | Unsafe, non-normalised or otherwise invalid `files` key |
-| 400 | `invalid_file_data` | `key` or `count` + `limit`, `rule` when a whole-set rule rejected it, and `errors` only when validation raised it (see below) | Malformed base64, excessive or colliding entries, or non-UTF-8 text |
-| 403 | `forbidden` | — | Missing or incorrect API token |
-| 404 | `not_found` | — | No route at the requested path |
-| 405 | `method_not_allowed` | — | The route exists but not for this method; `Allow` names the ones it has |
-| 408 | `render_timeout` | `timeout_secs` | Typst exceeded the render timeout |
-| 413 | `request_too_large` | `limit`, `declared_size` when `Content-Length` was sent | JSON body exceeded the request-body limit |
-| 413 | `template_source_too_large` | `size`, `limit` | `source` exceeded its limit |
-| 413 | `template_file_too_large` | `key`, `size`, `limit` | One `files` entry exceeded its limit after decoding |
-| 413 | `string_too_large` | `path`, `subject`, `size`, `limit` | One string in `data` exceeded its limit |
-| 413 | `output_too_large` | `size`, `limit` | Direct output, aggregate images or ZIP exceeded the output limit |
-| 413 | `page_selection_too_large` | `count`, `limit` | `pages` selects more pages than an archive may hold; nothing was rendered |
-| 413 | `too_many_output_files` | `limit` | The document produced more pages than an archive may hold |
-| 422 | `template_compile_failed` | — | Caller-supplied Typst or page selection could not produce the requested output, including a render killed for exhausting memory |
-| 429 | `render_queue_full` | `retry_after` | No render slot became free before the queue deadline |
-| 500 | `render_failed` | — | Typst was killed by a signal the render's own memory limit does not explain, or reported success but produced no expected output |
-| 503 | `service_unavailable` | — | Unexpected service or infrastructure failure |
+| Status | `code` | `origin` | `context` | Cause |
+| ---: | --- | --- | --- | --- |
+| 400 | `invalid_request` | `request` | `errors`, absent when the body could not be parsed at all | Missing, malformed, unknown or format-inappropriate request field, or a body no JSON parser accepts |
+| 400 | `unsupported_format` | `request` | `errors` | `format` outside `pdf`, `svg` and `png` |
+| 400 | `invalid_template_path` | `request` | `errors` | Unsafe, non-normalised or otherwise invalid `files` key |
+| 400 | `invalid_file_data` | `request` | `key` or `count` + `limit`, `rule` when a whole-set rule rejected it, and `errors` only when validation raised it (see below) | Malformed base64, excessive or colliding entries, or non-UTF-8 text |
+| 403 | `forbidden` | `request` | — | Missing or incorrect API token |
+| 404 | `not_found` | `request` | — | No route at the requested path |
+| 405 | `method_not_allowed` | `request` | — | The route exists but not for this method; `Allow` names the ones it has |
+| 408 | `render_timeout` | `request` | `timeout_secs` | Typst exceeded the render timeout |
+| 413 | `request_too_large` | `request` | `limit`, `declared_size` when `Content-Length` was sent | JSON body exceeded the request-body limit |
+| 413 | `template_source_too_large` | `template` | `size`, `limit` | `source` exceeded its limit |
+| 413 | `template_file_too_large` | `template` | `key`, `size`, `limit` | One `files` entry exceeded its limit after decoding |
+| 413 | `string_too_large` | `request` | `path`, `subject`, `size`, `limit` | One string in `data` exceeded its limit |
+| 413 | `output_too_large` | `request` | `size`, `limit` | Direct output, aggregate images or ZIP exceeded the output limit |
+| 413 | `page_selection_too_large` | `request` | `count`, `limit` | `pages` selects more pages than an archive may hold; nothing was rendered |
+| 413 | `too_many_output_files` | `request` | `limit` | The document produced more pages than an archive may hold |
+| 422 | `template_compile_failed` | `template` | — | Caller-supplied Typst or page selection could not produce the requested output, including a render killed for exhausting memory |
+| 429 | `render_queue_full` | `capacity` | `retry_after` | No render slot became free before the queue deadline |
+| 500 | `render_failed` | `service` | — | Typst was killed by a signal the render's own memory limit does not explain, or reported success but produced no expected output |
+| 503 | `service_unavailable` | `service` | — | Unexpected service or infrastructure failure |
+
+## Whose failure it is
+
+`origin` says what a failure is attributable to, so a client decides with one field instead of
+keeping its own list of codes. A code added later classifies itself on the day it ships.
+
+| `origin` | Meaning | What the client should do |
+| --- | --- | --- |
+| `request` | The request itself, or the document it asks for | Correct the request |
+| `template` | The inline template the request shipped | Correct the template |
+| `capacity` | Prelum is shedding load by design; nothing is broken | Wait for `Retry-After`, then retry |
+| `service` | Prelum itself failed | Retry cautiously and alert the service operator |
+
+`service` is the only value that means Prelum failed, and it is the only one worth alerting on.
+`capacity` in particular is designed behaviour: a busy service is not a broken one, and a client
+that pages on it pages on ordinary load.
+
+`request` and `template` are both the client's side of the exchange — `source` and `files` arrive in
+the same body — so the split says which half to correct, not which is more serious. Neither is ever
+Prelum's failure.
 
 `invalid_file_data` carries `key` when one `files` entry is at fault — malformed base64, text that
 is not UTF-8, a key that escapes the project root or collides with another in case or as a

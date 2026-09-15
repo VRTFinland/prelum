@@ -1,4 +1,4 @@
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from enum import StrEnum
 from http import HTTPStatus
 from typing import Literal, cast, override
@@ -349,3 +349,27 @@ def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     )
 
     return exc.to_response(request)
+
+
+def error_codes() -> list[dict[str, object]]:
+    """
+    Every published error code with its status and origin, for the documentation and its artefact.
+
+    Deployment-independent by construction: these are properties of the classes, not of a running
+    service. `AppError` itself is excluded — it carries `internal_error` and never reaches a caller,
+    since every 5xx arrives as `render_failed` or `service_unavailable`.
+    """
+
+    def descendants(cls: type[AppError]) -> Iterator[type[AppError]]:
+        for subclass in cls.__subclasses__():
+            if subclass.__module__ == __name__:
+                yield subclass
+            yield from descendants(subclass)
+
+    return sorted(
+        (
+            {"code": cls.code, "status": int(cls.status), "origin": cls.origin.value}
+            for cls in set(descendants(AppError))
+        ),
+        key=lambda entry: cast(str, entry["code"]),
+    )
