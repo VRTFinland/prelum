@@ -44,6 +44,17 @@ Several different conditions use status 413, so the status alone cannot tell a c
 large. The `code` distinguishes the request body, source, one file, one data string and the rendered
 output.
 
+## Fields may be added
+
+Request objects are strict: an unknown field is a mistake and is rejected rather than ignored.
+Responses are the opposite. An error body may gain fields within the same API version, so a client
+must ignore the ones it does not recognise, and a validator that rejects unknown members will break
+on an ordinary release. The published schema says so — the problem body is declared open.
+
+What will not change without a new API version: an existing field disappearing, changing type or
+changing meaning, an existing `code` answering a different status, or a documented `origin` value
+being withdrawn.
+
 ## Context fields
 
 A field means the same thing wherever it appears.

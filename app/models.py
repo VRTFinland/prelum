@@ -69,7 +69,14 @@ class Problem(BaseModel):
     instance: str
     context: dict[str, object]
 
-    model_config: ClassVar[ConfigDict] = _STRICT
+    # Not _STRICT, unlike every other model here. `extra="forbid"` publishes
+    # `additionalProperties: false`, which is the right promise for a request — an unknown field
+    # there is a caller's mistake and is rejected — but on a response it promises the body is
+    # final. `origin` was added to this body additively on the reasoning that a caller ignoring an
+    # unknown field is unaffected; a closed schema contradicts that and would oblige the next such
+    # field to wait for a new API version. `extra="allow"` states the openness outright rather than
+    # leaving it to the absence of a key.
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="allow", frozen=True)
 
 
 class ConstraintSetRule(BaseModel):

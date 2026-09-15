@@ -146,6 +146,25 @@ def test_openapi_publishes_the_error_origin_and_its_values(tmp_path: Path):
     assert "#/$defs/" not in json.dumps(schema)
 
 
+def test_the_published_problem_schema_stays_open_to_new_fields(tmp_path: Path):
+    """A closed error body would make the next added field a breaking change.
+
+    `origin` was added to this body additively, on the reasoning that a caller ignoring an unknown
+    field is unaffected. A schema declaring `additionalProperties: false` promises the opposite —
+    that the body is final — and would oblige the next such field to wait for a new API version.
+    Requests are strict in this API; responses are not, and the published schema must say so.
+    """
+    destination = tmp_path / "openapi.json"
+
+    export_openapi(destination)
+
+    schema = json.loads(destination.read_text(encoding="utf-8"))
+    problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"][
+        "schema"
+    ]
+    assert problem["additionalProperties"] is True
+
+
 def _documented_codes() -> dict[str, tuple[int, str]]:
     """Parse the Codes table into {code: (status, origin)}."""
     section = ERRORS_DOC.read_text(encoding="utf-8").split("## Codes", 1)[1]
