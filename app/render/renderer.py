@@ -35,7 +35,6 @@ from app.core.errors import (
     TemplateSourceTooLargeError,
     TooManyOutputFilesError,
     for_message,
-    status_is_server_fault,
 )
 from app.models import (
     JSONValue,
@@ -560,7 +559,7 @@ class TypstRenderer:
             # sends SIGKILL for the same runaway template, and SIGABRT means Typst aborted on its
             # own. A caller provokes whichever applies on demand, so routing it to a 5xx would hand
             # every caller a lever on the alert channel; every other signal is Typst crashing, which
-            # is ours and must stay a 5xx, because status_is_server_fault is the only thing that
+            # is ours and must stay a 5xx, because is_server_fault is the only thing that
             # raises the log to ERROR and so the only path to Sentry. An ordinary non-zero exit is
             # Typst rejecting the caller's source.
             out_of_memory = signal.SIGABRT if self.settings.max_render_memory_bytes is not None else signal.SIGKILL
@@ -572,7 +571,7 @@ class TypstRenderer:
                 error = RenderError(f"Typst was killed by signal {killed_by}")
             else:
                 error = InlineTemplateError(f"Template rendering failed (exit code {returncode})")
-            log_method = logger.error if status_is_server_fault(error.status) else logger.warning
+            log_method = logger.error if error.is_server_fault else logger.warning
             log_method(
                 "typst.failed",
                 returncode=returncode,
