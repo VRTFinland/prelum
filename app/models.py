@@ -137,17 +137,39 @@ class ConstraintsResponse(BaseModel):
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
+# Named so the published document can list the archive formats without a second spelling of "zip".
+type ArchiveFormat = Literal["zip"]
+
+
 class _RenderOutputBase(BaseModel):
     filename: str | None = None
 
     model_config: ClassVar[ConfigDict] = _STRICT
 
 
-_PAGE_RANGE = re.compile(r"[1-9][0-9]*(?:-(?:[1-9][0-9]*)?)?")
-_MAX_PAGE_SELECTION_LENGTH = 256
-_MAX_PAGE_SELECTION_SEGMENTS = 64
-_TAGGED_PDF_STANDARDS = {PdfStandard.a_1a, PdfStandard.a_2a, PdfStandard.a_3a, PdfStandard.ua_1}
-_PDF_A_VERSION = {
+# Public because app/core/output_rules.py publishes each of them, and a limit with two spellings is
+# a limit that can drift: the module that restates the rules must read the same object this module
+# enforces them from. The one exception is the compiled expression below, which is the pattern's
+# private form; the source string is what a caller in another language can use.
+
+# Applied to one comma-separated selection with fullmatch, so it is anchored at both ends by the
+# call rather than by the expression. A mirror that anchors with '^' and '$' instead accepts
+# '1\n', which Python's fullmatch does not — the conformance vectors carry that case.
+PAGE_SELECTION_PATTERN = r"[1-9][0-9]*(?:-(?:[1-9][0-9]*)?)?"
+MAX_PAGE_SELECTION_LENGTH = 256
+MAX_PAGE_SELECTION_SEGMENTS = 64
+# Field-level bounds. They live here rather than inline in Field(...) for the same reason: the
+# published document states each one, and a literal repeated in two files is the drift this whole
+# artefact exists to prevent.
+MAX_PDF_STANDARDS = 2
+MIN_IMAGE_PAGE = 1
+MIN_PNG_PPI = 1
+MAX_PNG_PPI = 300
+DEFAULT_PNG_PPI = 144
+
+_PAGE_RANGE = re.compile(PAGE_SELECTION_PATTERN)
+TAGGED_PDF_STANDARDS = {PdfStandard.a_1a, PdfStandard.a_2a, PdfStandard.a_3a, PdfStandard.ua_1}
+PDF_A_VERSION = {
     PdfStandard.a_1b: PdfVersion.v1_4,
     PdfStandard.a_1a: PdfVersion.v1_4,
     PdfStandard.a_2b: PdfVersion.v1_7,
@@ -216,17 +238,17 @@ class PageSelectionLimitError(ValueError):
 
 
 def parse_page_selection(value: str) -> tuple[PageRange, ...]:
-    if len(value) > _MAX_PAGE_SELECTION_LENGTH:
-        _reject(OutputRule.page_selection_too_long, f"pages must not exceed {_MAX_PAGE_SELECTION_LENGTH} characters")
+    if len(value) > MAX_PAGE_SELECTION_LENGTH:
+        _reject(OutputRule.page_selection_too_long, f"pages must not exceed {MAX_PAGE_SELECTION_LENGTH} characters")
 
     selections = value.split(",")
     # Counted before the selections are matched, rather than beside them: the count is the cheap
     # half of what used to be one condition, and the two answers are now separate published rules,
     # so a value breaking both has to name the one that bounds the work the other would do.
-    if len(selections) > _MAX_PAGE_SELECTION_SEGMENTS:
+    if len(selections) > MAX_PAGE_SELECTION_SEGMENTS:
         _reject(
             OutputRule.page_selection_too_many_segments,
-            f"pages must not exceed {_MAX_PAGE_SELECTION_SEGMENTS} comma-separated selections",
+            f"pages must not exceed {MAX_PAGE_SELECTION_SEGMENTS} comma-separated selections",
         )
     if any(_PAGE_RANGE.fullmatch(selection) is None for selection in selections):
         _reject(
@@ -296,7 +318,7 @@ type PageSelection = Annotated[str, AfterValidator(_validate_page_selection)]
 class PdfOutput(_RenderOutputBase):
     format: Literal[OutputFormat.pdf] = OutputFormat.pdf
     version: PdfVersion | None = None
-    standards: list[PdfStandard] = Field(default_factory=list, max_length=2)
+    standards: list[PdfStandard] = Field(default_factory=list, max_length=MAX_PDF_STANDARDS)
     pages: PageSelection | None = None
 
     @model_validator(mode="after")
@@ -304,20 +326,20 @@ class PdfOutput(_RenderOutputBase):
         if len(set(self.standards)) != len(self.standards):
             _reject(OutputRule.duplicate_standards, "PDF standards must not contain duplicates")
 
-        pdf_a = [standard for standard in self.standards if standard in _PDF_A_VERSION]
+        pdf_a = [standard for standard in self.standards if standard in PDF_A_VERSION]
         if len(pdf_a) > 1:
             _reject(OutputRule.multiple_pdf_a_standards, "Only one PDF/A standard can be selected")
         if PdfStandard.ua_1 in self.standards and any(standard.value.startswith("a-4") for standard in pdf_a):
             _reject(OutputRule.ua_1_with_pdf_a_4, "PDF/UA-1 is incompatible with PDF/A-4")
 
-        if self.version is not None and pdf_a and self.version != _PDF_A_VERSION[pdf_a[0]]:
+        if self.version is not None and pdf_a and self.version != PDF_A_VERSION[pdf_a[0]]:
             _reject(
                 OutputRule.version_conflicts_with_standard,
-                f"{pdf_a[0].value} requires PDF version {_PDF_A_VERSION[pdf_a[0]].value}",
+                f"{pdf_a[0].value} requires PDF version {PDF_A_VERSION[pdf_a[0]].value}",
             )
         if self.version == PdfVersion.v2_0 and PdfStandard.ua_1 in self.standards:
             _reject(OutputRule.ua_1_with_pdf_2_0, "PDF/UA-1 is incompatible with PDF 2.0")
-        if self.pages is not None and _TAGGED_PDF_STANDARDS.intersection(self.standards):
+        if self.pages is not None and TAGGED_PDF_STANDARDS.intersection(self.standards):
             _reject(
                 OutputRule.pages_with_tagged_standard,
                 "PDF page selection cannot be combined with a standard that requires tagging",
@@ -327,8 +349,8 @@ class PdfOutput(_RenderOutputBase):
 
 
 class _ImageOutputBase(_RenderOutputBase):
-    page: int | None = Field(default=None, ge=1, strict=True)
-    archive: Literal["zip"] | None = None
+    page: int | None = Field(default=None, ge=MIN_IMAGE_PAGE, strict=True)
+    archive: ArchiveFormat | None = None
     pages: PageSelection | None = None
 
     @model_validator(mode="after")
@@ -342,7 +364,7 @@ class _ImageOutputBase(_RenderOutputBase):
 
 class PngOutput(_ImageOutputBase):
     format: Literal[OutputFormat.png] = OutputFormat.png
-    ppi: int = Field(default=144, ge=1, le=300, strict=True)
+    ppi: int = Field(default=DEFAULT_PNG_PPI, ge=MIN_PNG_PPI, le=MAX_PNG_PPI, strict=True)
 
 
 class SvgOutput(_ImageOutputBase):
