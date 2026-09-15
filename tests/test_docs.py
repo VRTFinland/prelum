@@ -26,7 +26,7 @@ def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Pat
     schema = json.loads(destination.read_text(encoding="utf-8"))
     assert {"/health", "/v1/constraints", "/v1/render"} <= schema["paths"].keys()
     assert schema["info"]["title"] == "Prelum"
-    assert schema["info"]["version"] == "1.0.1"
+    assert schema["info"]["version"] == "1.1.0"
 
     security_schemes = schema["components"]["securitySchemes"]
     assert security_schemes == {
