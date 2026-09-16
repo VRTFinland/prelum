@@ -13,7 +13,7 @@ from fastapi.responses import JSONResponse, Response
 from prometheus_fastapi_instrumentator import Instrumentator
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp, Message
+from starlette.types import ASGIApp, ExceptionHandler, Message
 from structlog.typing import FilteringBoundLogger
 
 from app.api.routes import router
@@ -188,6 +188,100 @@ def _verify_render_memory_limit(settings: Settings) -> None:
         )
 
 
+# Registered by create_app rather than defined inside it: none of the four closes over anything
+# there, and as nested functions they were most of its body and could not be reached without
+# building a whole app to drive them through a client.
+
+
+async def add_request_id(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    bind_request_context(request_id)
+    request.state.request_id = request_id
+    try:
+        response = await call_next(request)
+    finally:
+        clear_request_context()
+    response.headers["x-request-id"] = request_id
+    return response
+
+
+async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+    return app_error_handler(request, exc)
+
+
+async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    # Starlette answers routing failures itself, and FastAPI raises a bare 400 for a body no
+    # JSON parser accepts — a number past Python's decimal-to-integer bound, say, which is not
+    # a JSONDecodeError and so never becomes a RequestValidationError. All of them bypassed the
+    # two handlers above and replied in Starlette's own {"detail": ...} shape, contradicting the
+    # published promise that every failure is application/problem+json.
+    error_class = _HTTP_EXCEPTION_ERRORS.get(exc.status_code)
+    # exc.detail is Starlette's prose and is dropped: a route may raise HTTPException with
+    # caller-derived text, and no request content may re-enter a response.
+    if error_class is None:
+        # Nothing else about an arbitrary HTTPException is contractual, so it is classified by
+        # status alone — which means the answer no longer carries the status that was raised.
+        # Its headers belong to that status (a 401's WWW-Authenticate, say) and would be a
+        # false instruction on this one, so they are dropped with it.
+        return (InvalidRequestError if exc.status_code < 500 else ServiceUnavailableError)().to_response(request)
+
+    # The status survives, so the headers still describe the answer: a 405 without its Allow
+    # no longer tells the caller what to send instead.
+    response = error_class().to_response(request)
+    response.headers.update(exc.headers or {})
+    return response
+
+
+async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # Dropping "input" keeps the caller's own template source and assets — which is what it
+    # mirrors — out of responses, proxies and logs. "ctx" duplicates "msg" and exposes Pydantic
+    # internals. loc, msg and type identify the problem without either.
+    errors = cast(list[dict[str, object]], exc.errors())
+    published_errors = [
+        {"loc": _bounded_location(error), "msg": _bounded_message(error), "type": error.get("type")}
+        for error in errors[:_MAX_PUBLISHED_ERRORS]
+    ]
+    classified = next(
+        (
+            (error, error_class)
+            for error in errors
+            if (error_class := VALIDATION_ERRORS_BY_CODE.get(cast(str, error.get("type")))) is not None
+        ),
+        None,
+    )
+    error_class: type[AppError] = InvalidRequestError if classified is None else classified[1]
+
+    # The one error `detail`, `code` and `rule` all describe. `code` follows the classified
+    # files-key error wherever it sits among the errors, so the other two follow it too; with
+    # nothing classified, the first failure answers for all three. Reading them from different
+    # errors reported a rule the `detail` beside it was not about.
+    reported = classified[0] if classified is not None else (errors[0] if errors else None)
+
+    context: dict[str, object] = {"errors": published_errors}
+    if len(errors) > _MAX_PUBLISHED_ERRORS:
+        context["errors_total"] = len(errors)
+    if classified is not None:
+        # templates.py raised with a context; models.py carried it here through the Pydantic ctx.
+        # "message" is the prose already in msg.
+        lifted = cast(dict[str, object], classified[0].get("ctx", {}))
+        context.update({key: value for key, value in lifted.items() if key != "message"})
+    # An output-option rule keeps the `value_error` type every other validator failure has, so
+    # `loc`, `type` and `code` are the same whichever of them fired: without the id, the only
+    # thing separating them is `msg`, which is prose a caller may not branch on. Past
+    # _MAX_PUBLISHED_ERRORS the id is the only trace of the rule left in the response.
+    rule = cast(dict[str, object], reported.get("ctx", {})).get("rule") if reported is not None else None
+    if isinstance(rule, str):
+        context["rule"] = rule
+
+    # Validation errors carry the raised exception in ctx; encode at any depth so the response
+    # body cannot fail to serialise.
+    error = error_class(
+        _validation_detail(reported) if reported is not None else "Request validation failed",
+        context=cast(dict[str, object], jsonable_encoder(context, custom_encoder={Exception: str})),
+    )
+    return error.to_response(request)
+
+
 def create_app() -> FastAPI:
     settings = get_settings()
 
@@ -232,94 +326,10 @@ def create_app() -> FastAPI:
 
     Instrumentator().instrument(app).expose(app)
 
-    @app.middleware("http")
-    async def add_request_id(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-        bind_request_context(request_id)
-        request.state.request_id = request_id
-        try:
-            response = await call_next(request)
-        finally:
-            clear_request_context()
-        response.headers["x-request-id"] = request_id
-        return response
-
-    @app.exception_handler(AppError)
-    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        return app_error_handler(request, exc)
-
-    @app.exception_handler(StarletteHTTPException)
-    async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        # Starlette answers routing failures itself, and FastAPI raises a bare 400 for a body no
-        # JSON parser accepts — a number past Python's decimal-to-integer bound, say, which is not
-        # a JSONDecodeError and so never becomes a RequestValidationError. All of them bypassed the
-        # two handlers above and replied in Starlette's own {"detail": ...} shape, contradicting the
-        # published promise that every failure is application/problem+json.
-        error_class = _HTTP_EXCEPTION_ERRORS.get(exc.status_code)
-        # exc.detail is Starlette's prose and is dropped: a route may raise HTTPException with
-        # caller-derived text, and no request content may re-enter a response.
-        if error_class is None:
-            # Nothing else about an arbitrary HTTPException is contractual, so it is classified by
-            # status alone — which means the answer no longer carries the status that was raised.
-            # Its headers belong to that status (a 401's WWW-Authenticate, say) and would be a
-            # false instruction on this one, so they are dropped with it.
-            return (InvalidRequestError if exc.status_code < 500 else ServiceUnavailableError)().to_response(request)
-
-        # The status survives, so the headers still describe the answer: a 405 without its Allow
-        # no longer tells the caller what to send instead.
-        response = error_class().to_response(request)
-        response.headers.update(exc.headers or {})
-        return response
-
-    @app.exception_handler(RequestValidationError)
-    async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-        # Dropping "input" keeps the caller's own template source and assets — which is what it
-        # mirrors — out of responses, proxies and logs. "ctx" duplicates "msg" and exposes Pydantic
-        # internals. loc, msg and type identify the problem without either.
-        errors = cast(list[dict[str, object]], exc.errors())
-        published_errors = [
-            {"loc": _bounded_location(error), "msg": _bounded_message(error), "type": error.get("type")}
-            for error in errors[:_MAX_PUBLISHED_ERRORS]
-        ]
-        classified = next(
-            (
-                (error, error_class)
-                for error in errors
-                if (error_class := VALIDATION_ERRORS_BY_CODE.get(cast(str, error.get("type")))) is not None
-            ),
-            None,
-        )
-        error_class: type[AppError] = InvalidRequestError if classified is None else classified[1]
-
-        # The one error `detail`, `code` and `rule` all describe. `code` follows the classified
-        # files-key error wherever it sits among the errors, so the other two follow it too; with
-        # nothing classified, the first failure answers for all three. Reading them from different
-        # errors reported a rule the `detail` beside it was not about.
-        reported = classified[0] if classified is not None else (errors[0] if errors else None)
-
-        context: dict[str, object] = {"errors": published_errors}
-        if len(errors) > _MAX_PUBLISHED_ERRORS:
-            context["errors_total"] = len(errors)
-        if classified is not None:
-            # templates.py raised with a context; models.py carried it here through the Pydantic ctx.
-            # "message" is the prose already in msg.
-            lifted = cast(dict[str, object], classified[0].get("ctx", {}))
-            context.update({key: value for key, value in lifted.items() if key != "message"})
-        # An output-option rule keeps the `value_error` type every other validator failure has, so
-        # `loc`, `type` and `code` are the same whichever of them fired: without the id, the only
-        # thing separating them is `msg`, which is prose a caller may not branch on. Past
-        # _MAX_PUBLISHED_ERRORS the id is the only trace of the rule left in the response.
-        rule = cast(dict[str, object], reported.get("ctx", {})).get("rule") if reported is not None else None
-        if isinstance(rule, str):
-            context["rule"] = rule
-
-        # Validation errors carry the raised exception in ctx; encode at any depth so the response
-        # body cannot fail to serialise.
-        error = error_class(
-            _validation_detail(reported) if reported is not None else "Request validation failed",
-            context=cast(dict[str, object], jsonable_encoder(context, custom_encoder={Exception: str})),
-        )
-        return error.to_response(request)
+    app.add_middleware(BaseHTTPMiddleware, dispatch=add_request_id)
+    app.add_exception_handler(AppError, cast(ExceptionHandler, handle_app_error))
+    app.add_exception_handler(StarletteHTTPException, cast(ExceptionHandler, handle_http_exception))
+    app.add_exception_handler(RequestValidationError, cast(ExceptionHandler, handle_validation_error))
 
     return app
 
