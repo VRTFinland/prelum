@@ -87,7 +87,7 @@ checks: lint type-check
 # Regenerate the example request body from examples/hello.typ and examples/lib/label.typ
 regenerate-examples:
 	@echo "Regenerating examples/render-request.json from the .typ files..."
-	@uv run python scripts/regenerate-example-request.py
+	@uv run python -m scripts.regenerate_example_request
 
 # Render the published example artefacts. The manual is built from the documentation itself, so
 # it can only be correct when it is produced by the same build that produces the site.

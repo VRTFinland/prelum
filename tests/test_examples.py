@@ -15,7 +15,7 @@ EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
 
 _REGENERATE_HINT = (
     "render-request.json is a generated file, not a hand-maintained one: rerun "
-    "`uv run python scripts/regenerate-example-request.py` after editing the .typ files."
+    "`make regenerate-examples` after editing the .typ files."
 )
 
 
