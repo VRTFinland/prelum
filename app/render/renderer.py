@@ -12,8 +12,8 @@ import zipfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
-from typing import Literal, cast
+from tempfile import mkdtemp
+from typing import Literal, NamedTuple, cast
 from uuid import uuid4
 
 import structlog
@@ -37,15 +37,12 @@ from app.core.errors import (
     for_message,
 )
 from app.models import (
+    ImageOutput,
     JSONValue,
-    OutputFormat,
     PageSelectionLimitError,
-    PdfOutput,
-    PngOutput,
     RenderFile,
     RenderJob,
     RenderOutput,
-    SvgOutput,
     bound_page_selection,
 )
 from app.render.templates import RENDER_TEMP_PREFIX, ensure_project_root_fits
@@ -144,11 +141,26 @@ def _encode_utf8(text: str, subject: str, *, key: str | None = None) -> bytes:
 
 logger: FilteringBoundLogger = cast(FilteringBoundLogger, structlog.get_logger())
 
-FORMAT_MAP: dict[OutputFormat, tuple[str, str]] = {
-    OutputFormat.pdf: ("pdf", "application/pdf"),
-    OutputFormat.svg: ("svg", "image/svg+xml"),
-    OutputFormat.png: ("png", "image/png"),
-}
+
+def resource_limit_args(settings: Settings) -> tuple[str, ...]:
+    """
+    The prlimit prefix that bounds one render's memory, or nothing when no limit is configured.
+
+    Three things about the form are load-bearing. The value is attached to the flag because
+    prlimit's --data takes an *optional* argument — it doubles as a query — so getopt will not
+    attach a separate token, and prlimit would read the number as the command to exec, leave
+    the limit unset and exit 127. The "--" terminator keeps typst's own flags out of prlimit's
+    option parsing. And prlimit execs its target rather than forking it, so proc.kill() and the
+    return code in _run_typst still refer to typst itself, signal and all.
+
+    Module-level rather than a renderer method because main.py's startup probe forks this same
+    prefix to prove the wrapper works. A probe that assembled its own copy would keep validating
+    the old argv after this one changed, passing the boot check while every render failed.
+    """
+    limit = settings.max_render_memory_bytes
+    if limit is None:
+        return ()
+    return (str(constants.PRLIMIT_PATH), f"--data={limit}", "--")
 
 
 @dataclass(frozen=True, slots=True)
@@ -171,8 +183,19 @@ class _ProjectLayout:
         return self.temp_dir / f"output-{{p}}.{ext}"
 
 
+class _PageOutput(NamedTuple):
+    """One page file a multi-page compile produced. Sorts by page, which is the order it is zipped in."""
+
+    page: int
+    path: Path
+    size: int
+
+
 @dataclass(frozen=True, slots=True)
 class _OutputPlan:
+    """Everything one render's compile and delivery need, decided once from the request."""
+
+    output: RenderOutput
     typst_output: Path
     extension: str
     content_type: str
@@ -224,13 +247,18 @@ class TypstRenderer:
         )
 
         # A fixed, short root makes the published key-length limit independent of TMPDIR. The
-        # reserve assertion protects the contract if either this root or TemporaryDirectory's
-        # naming scheme changes later.
-        with TemporaryDirectory(prefix=RENDER_TEMP_PREFIX, dir=self.settings.temp_root) as temp_dir_str:
-            temp_dir = Path(temp_dir_str)
+        # reserve assertion protects the contract if either this root or mkdtemp's naming scheme
+        # changes later.
+        #
+        # mkdtemp with an explicit teardown rather than TemporaryDirectory, whose __exit__ would
+        # rmtree the whole project — the entry point, every caller file, and for a zip render every
+        # page file — synchronously on the event loop. Every write into this tree already goes
+        # through a worker thread; deleting all of it must too.
+        temp_dir = await asyncio.to_thread(self._make_temp_dir)
+        try:
             project_root = temp_dir / "project"
             ensure_project_root_fits(project_root)
-            project_root.mkdir()
+            await asyncio.to_thread(project_root.mkdir)
 
             await asyncio.to_thread(self._write_inline_files, project_root, job.files)
 
@@ -240,6 +268,13 @@ class TypstRenderer:
                 bound_template=project_root / INLINE_TEMPLATE_FILENAME,
             )
             return await self._bind_and_compile(job, layout, source_bytes)
+        finally:
+            # ignore_errors matches TemporaryDirectory's own cleanup contract: a render must not
+            # fail, nor a failure be masked, because the tree could not be removed.
+            await asyncio.shield(asyncio.to_thread(shutil.rmtree, temp_dir, ignore_errors=True))
+
+    def _make_temp_dir(self) -> Path:
+        return Path(mkdtemp(prefix=RENDER_TEMP_PREFIX, dir=self.settings.temp_root))
 
     def _write_inline_files(
         self,
@@ -253,25 +288,17 @@ class TypstRenderer:
         the model layer. The escape check below asserts that already-proven invariant on a security
         boundary; the errno filter covers what only the filesystem can refuse.
 
+        The key count is settled before a render slot is taken — the model applies the structural cap
+        and the route the configured one — so it is not re-checked here.
+
         :param project_root: Already created by the caller.
-        :raises InvalidFileDataError: If there are too many entries, base64 content is malformed, a key
-            escapes the project root, two keys differ only in case, or the keys describe a layout
-            that cannot be written.
+        :raises InvalidFileDataError: If base64 content is malformed, a key escapes the project root,
+            two keys differ only in case, or the keys describe a layout that cannot be written.
         :raises OSError: If writing fails for a reason outside the caller's control.
         :raises TemplateFileTooLargeError: If an entry exceeds ``max_inline_file_bytes``.
         """
         if not files:
             return
-
-        limit = self.settings.max_inline_files
-        if len(files) > limit:
-            raise InvalidFileDataError(
-                f"Too many files entries: {len(files)} exceeds limit {limit}",
-                # The same published rule as the structural cap in templates.py, enforced here
-                # against the configurable limit. Without the label a caller branching on
-                # context.rule would never see it: the configured limit is the lower of the two.
-                context={"count": len(files), "limit": limit, "rule": "too_many_keys"},
-            )
 
         resolved_root = project_root.resolve()
         for relative_key, file_entry in files.items():
@@ -333,31 +360,37 @@ class TypstRenderer:
 
         :param source_bytes: The template source to compile, already UTF-8.
         """
-        prelude = f"#let request = {self._json_to_typst(job.data)};\n#let data = request;\n"
-        bound_bytes = prelude.encode("utf-8") + source_bytes
-        _ = await asyncio.to_thread(layout.bound_template.write_bytes, bound_bytes)
+        await asyncio.to_thread(self._write_bound_template, layout.bound_template, job.data, source_bytes)
 
         plan = self._output_plan(layout, job.output)
-        await self._run_typst(layout, plan.typst_output, job.output, page_selection=plan.page_selection)
+        page_outputs = await self._run_typst(layout, plan)
 
         if plan.archive:
-            return await self._finalise_archive(layout, plan, job.output)
-        return await self._finalise_output(
-            plan.typst_output,
-            job.output,
-            plan.response_extension,
-            plan.content_type,
-            disposition=plan.disposition,
-        )
+            return await self._finalise_archive(layout, plan, page_outputs)
+        return await self._finalise_output(plan)
+
+    def _write_bound_template(self, destination: Path, data: JSONValue, source_bytes: bytes) -> None:
+        """
+        Serialise the request data into the Typst prelude and write the bound template.
+
+        Runs in a worker thread rather than on the event loop: the walk is pure Python and O(request
+        size), and `data` is bounded only by max_request_body_bytes, so a large payload would stall
+        every other in-flight render along with /health and /metrics.
+
+        :raises StringTooLargeError: If a string in the data exceeds its published size limit.
+        """
+        prelude = f"#let request = {self._json_to_typst(data)};\n#let data = request;\n"
+        _ = destination.write_bytes(prelude.encode("utf-8") + source_bytes)
 
     def _output_plan(self, layout: _ProjectLayout, output: RenderOutput) -> _OutputPlan:
-        ext, content_type = FORMAT_MAP[output.format]
-        if isinstance(output, (PngOutput, SvgOutput)) and output.archive == "zip":
+        ext = output.extension
+        if isinstance(output, ImageOutput) and output.archive == "zip":
             try:
                 page_selection = bound_page_selection(output.pages, limit=self.settings.max_output_files)
             except PageSelectionLimitError as exc:
                 raise PageSelectionTooLargeError(count=exc.count, limit=exc.limit) from exc
             return _OutputPlan(
+                output=output,
                 typst_output=layout.output_template(ext),
                 extension=ext,
                 content_type="application/zip",
@@ -367,64 +400,50 @@ class TypstRenderer:
                 archive=True,
             )
         return _OutputPlan(
+            output=output,
             typst_output=layout.output_path(ext),
             extension=ext,
-            content_type=content_type,
+            content_type=output.content_type,
             response_extension=ext,
             disposition="inline",
         )
 
-    async def _finalise_output(
-        self,
-        output_path: Path,
-        output: RenderOutput,
-        ext: str,
-        content_type: str,
-        *,
-        disposition: Literal["inline", "attachment"] = "inline",
-    ) -> RenderResult:
-        output_size = (await asyncio.to_thread(output_path.stat)).st_size
+    async def _finalise_output(self, plan: _OutputPlan) -> RenderResult:
+        output_size = (await asyncio.to_thread(plan.typst_output.stat)).st_size
         self._check_output_size(output_size)
-        output_bytes = await asyncio.to_thread(output_path.read_bytes)
-        filename = self._sanitize_filename(
-            output.filename or f"rendered.{ext}",
-            ext=ext,
-        )
-
-        if self.settings.debug_output_dir:
-            await self._save_debug_copy(output_path, filename)
-
-        logger.info(
-            "render.complete",
-            bytes=len(output_bytes),
-        )
-
-        return RenderResult(
-            bytes=output_bytes,
-            content_type=content_type,
-            filename=filename,
-            disposition=disposition,
-        )
+        output_bytes = await asyncio.to_thread(plan.typst_output.read_bytes)
+        return await self._deliver(plan, output_bytes, plan.typst_output)
 
     async def _finalise_archive(
         self,
         layout: _ProjectLayout,
         plan: _OutputPlan,
-        output: RenderOutput,
+        page_outputs: list[_PageOutput],
     ) -> RenderResult:
         archive_path = layout.output_path("zip")
-        output_bytes, file_count = await asyncio.to_thread(
-            self._create_archive,
-            plan.typst_output,
-            archive_path,
-            plan.extension,
-        )
-        filename = self._sanitize_filename(output.filename or "rendered.zip", ext="zip")
+        output_bytes = await asyncio.to_thread(self._create_archive, page_outputs, archive_path, plan.extension)
+        return await self._deliver(plan, output_bytes, archive_path, files=len(page_outputs))
+
+    async def _deliver(
+        self,
+        plan: _OutputPlan,
+        output_bytes: bytes,
+        debug_source: Path,
+        **log_fields: object,
+    ) -> RenderResult:
+        """
+        The tail every render shares: name the artefact, keep the optional debug copy, report it.
+
+        :param debug_source: The on-disk artefact to copy when debug_output_dir is configured.
+        :param log_fields: Extra render.complete fields, e.g. an archive's page count.
+        """
+        ext = plan.response_extension
+        filename = self._sanitize_filename(plan.output.filename or f"rendered.{ext}", ext=ext)
 
         if self.settings.debug_output_dir:
-            await self._save_debug_copy(archive_path, filename)
+            await self._save_debug_copy(debug_source, filename)
 
-        logger.info("render.complete", bytes=len(output_bytes), files=file_count)
+        logger.info("render.complete", bytes=len(output_bytes), **log_fields)
         return RenderResult(
             bytes=output_bytes,
             content_type=plan.content_type,
@@ -434,40 +453,49 @@ class TypstRenderer:
 
     def _create_archive(
         self,
-        output_template: Path,
+        outputs: list[_PageOutput],
         archive_path: Path,
         extension: str,
-    ) -> tuple[bytes, int]:
-        outputs = self._collect_page_outputs(output_template)
+    ) -> bytes:
+        # _run_typst has already proven the compile produced pages. Asserted again rather than
+        # assumed, so this never silently returns an empty archive if that stops being true.
         if not outputs:
             raise RenderError("Typst did not produce page output files")
         if len(outputs) > self.settings.max_output_files:
             raise TooManyOutputFilesError(limit=self.settings.max_output_files)
 
-        output_size = sum(size for _, _, size in outputs)
-        self._check_output_size(output_size)
+        self._check_output_size(sum(page_output.size for page_output in outputs))
 
-        padding = max(2, len(str(outputs[-1][0])))
+        padding = max(2, len(str(outputs[-1].page)))
+        # Built on disk rather than in a BytesIO. Only the finished bytes have to be held, and
+        # getvalue() would copy them out of the buffer while the buffer is still alive — two copies
+        # of an archive that may be max_output_bytes, at a time when max_concurrent_renders of them
+        # can be in flight, against a configuration that documents worst-case memory as the one
+        # multiplied by the other.
         with zipfile.ZipFile(archive_path, mode="w") as archive:
-            for page, path, _size in outputs:
-                entry = zipfile.ZipInfo(f"page-{page:0{padding}d}.{extension}", date_time=_ZIP_TIMESTAMP)
+            for page_output in outputs:
+                entry = zipfile.ZipInfo(f"page-{page_output.page:0{padding}d}.{extension}", date_time=_ZIP_TIMESTAMP)
                 entry.compress_type = zipfile.ZIP_DEFLATED
                 entry.create_system = 3
                 entry.external_attr = _ZIP_FILE_MODE << 16
-                archive.writestr(entry, path.read_bytes())
+                # Streamed rather than writestr(path.read_bytes()): no page is held whole in memory
+                # alongside the archive being built out of it.
+                with archive.open(entry, "w") as target, page_output.path.open("rb") as source:
+                    _ = shutil.copyfileobj(source, target)
 
-        archive_size = archive_path.stat().st_size
-        self._check_output_size(archive_size)
-        return archive_path.read_bytes(), len(outputs)
+        # The size of a file that was streamed is not known until it is measured, and measuring it
+        # before reading refuses an oversized archive without ever holding it.
+        self._check_output_size(archive_path.stat().st_size)
+        return archive_path.read_bytes()
 
     def _check_output_size(self, size: int) -> None:
         if size > self.settings.max_output_bytes:
             raise OutputTooLargeError(size=size, limit=self.settings.max_output_bytes)
 
-    def _collect_page_outputs(self, output_template: Path) -> list[tuple[int, Path, int]]:
+    def _collect_page_outputs(self, output_template: Path) -> list[_PageOutput]:
         prefix, suffix = output_template.name.split("{p}", maxsplit=1)
         pattern = re.compile(rf"{re.escape(prefix)}([1-9]\d*){re.escape(suffix)}")
-        outputs: list[tuple[int, Path, int]] = []
+        outputs: list[_PageOutput] = []
         for path in output_template.parent.iterdir():
             match = pattern.fullmatch(path.name)
             if match is None:
@@ -475,27 +503,29 @@ class TypstRenderer:
             metadata = path.lstat()
             if path.is_symlink() or not stat.S_ISREG(metadata.st_mode):
                 raise RenderError("Typst produced an invalid page output")
-            outputs.append((int(match.group(1)), path, metadata.st_size))
+            outputs.append(_PageOutput(int(match.group(1)), path, metadata.st_size))
         return sorted(outputs)
 
-    async def _run_typst(
-        self,
-        layout: _ProjectLayout,
-        output_path: Path,
-        output: RenderOutput | None = None,
-        *,
-        page_selection: str | None = None,
-    ) -> None:
+    async def _run_typst(self, layout: _ProjectLayout, plan: _OutputPlan) -> list[_PageOutput]:
+        """
+        Compile the bound template and prove it produced what the plan asked for.
+
+        :return: The page files of a multi-page run, in page order; empty for a single-file output.
+            Collected here so the archive builder never has to scan the directory a second time.
+        :raises RenderTimeoutError: If the compile outlives render_timeout_secs.
+        :raises InlineTemplateError: If the caller's source or page selection is at fault.
+        :raises RenderError: If Typst itself failed, or produced no output at all.
+        """
+        output, output_path = plan.output, plan.typst_output
         bound_template, project_root = layout.bound_template, layout.project_root
         package_dir = layout.package_dir
         package_dir.mkdir(parents=True, exist_ok=True)
-        output = output or PdfOutput()
         font_paths = [project_root]
         if self.settings.font_path is not None:
             font_paths.append(self.settings.font_path)
         package_path = self.settings.local_package_path or package_dir
         proc = await asyncio.create_subprocess_exec(
-            *self._resource_limit_args(),
+            *resource_limit_args(self.settings),
             str(self.settings.cli_path),
             "compile",
             "--root",
@@ -506,7 +536,7 @@ class TypstRenderer:
             str(package_path),
             "--package-cache-path",
             str(package_dir),
-            *self._typst_output_args(output, page_selection=page_selection),
+            *output.cli_args(page_selection=plan.page_selection),
             str(bound_template),
             str(output_path),
             cwd=project_root,
@@ -571,57 +601,16 @@ class TypstRenderer:
             )
             raise error
 
-        if "{p}" in output_path.name:
+        if plan.archive:
             outputs = await asyncio.to_thread(self._collect_page_outputs, output_path)
             if outputs:
-                return
+                return outputs
         elif await asyncio.to_thread(output_path.exists):
-            return
+            return []
 
-        if isinstance(output, (PngOutput, SvgOutput)) and (output.page is not None or output.pages is not None):
+        if isinstance(output, ImageOutput) and (output.page is not None or output.pages is not None):
             raise InlineTemplateError("Selected image pages do not exist")
         raise RenderError("Typst did not produce output file")
-
-    def _resource_limit_args(self) -> tuple[str, ...]:
-        """
-        The prlimit prefix that bounds one render's memory, or nothing when no limit is configured.
-
-        Three things about the form are load-bearing. The value is attached to the flag because
-        prlimit's --data takes an *optional* argument — it doubles as a query — so getopt will not
-        attach a separate token, and prlimit would read the number as the command to exec, leave
-        the limit unset and exit 127. The "--" terminator keeps typst's own flags out of prlimit's
-        option parsing. And prlimit execs its target rather than forking it, so proc.kill() and the
-        return code below still refer to typst itself, signal and all.
-        """
-        limit = self.settings.max_render_memory_bytes
-        if limit is None:
-            return ()
-        return (str(constants.PRLIMIT_PATH), f"--data={limit}", "--")
-
-    def _typst_output_args(self, output: RenderOutput, *, page_selection: str | None = None) -> tuple[str, ...]:
-        if isinstance(output, PdfOutput):
-            args: list[str] = []
-            standards = [standard.value for standard in output.standards]
-            if output.version is not None:
-                standards.insert(0, output.version.value)
-            if standards:
-                args.extend(("--pdf-standard", ",".join(standards)))
-            if output.pages is not None:
-                args.extend(("--pages", output.pages))
-            return tuple(args)
-
-        if isinstance(output, PngOutput):
-            args = ["--ppi", str(output.ppi)]
-            selected_pages = page_selection or (str(output.page) if output.page is not None else None)
-            if selected_pages is not None:
-                args.extend(("--pages", selected_pages))
-            return tuple(args)
-
-        if isinstance(output, SvgOutput):
-            selected_pages = page_selection or (str(output.page) if output.page is not None else None)
-            if selected_pages is not None:
-                return "--pages", selected_pages
-        return ()
 
     def _typst_env(self) -> dict[str, str]:
         """
@@ -661,13 +650,9 @@ class TypstRenderer:
         basename = Path(name).name
         filtered = "".join(ch for ch in basename if ch in SAFE_FILENAME_CHARS).strip("._-")
 
-        if not filtered:
-            stem = "rendered"
-        else:
-            parts = [part for part in filtered.split(".") if part]
-            stem = parts[0] if parts else "rendered"
-
-        stem = stem[:_MAX_FILENAME_STEM_LENGTH]
+        # filtered is already stripped of leading and trailing "._-", so it cannot be all dots:
+        # the first dot-separated part is always non-empty once the empty case is out of the way.
+        stem = ("rendered" if not filtered else filtered.split(".", maxsplit=1)[0])[:_MAX_FILENAME_STEM_LENGTH]
         safe_ext = ext.lstrip(".").lower() or "pdf"
         return f"{stem}.{safe_ext}"
 

@@ -1,10 +1,9 @@
-import json
 from pathlib import Path
 
 from app.core.errors import error_codes
+from scripts._artefacts import API_DOCS, write_json_artefact
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DESTINATION = ROOT / "docs" / "api" / "error-codes.json"
+DEFAULT_DESTINATION = API_DOCS / "error-codes.json"
 
 
 def export_error_codes(destination: Path = DEFAULT_DESTINATION) -> None:
@@ -14,9 +13,7 @@ def export_error_codes(destination: Path = DEFAULT_DESTINATION) -> None:
     A caller that wants to pin its branch on `origin` can diff this artefact instead of transcribing
     the table by hand, which is the duplication the field exists to remove.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    document = json.dumps(error_codes(), indent=2, sort_keys=True)
-    _ = destination.write_text(f"{document}\n", encoding="utf-8")
+    write_json_artefact(error_codes(), destination)
 
 
 if __name__ == "__main__":

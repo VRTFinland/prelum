@@ -152,20 +152,33 @@ def validate_inline_file_key(key: str) -> str:
     return key
 
 
-def ensure_key_count_fits(count: int) -> None:
+def effective_key_limit(max_inline_files: int) -> int:
     """
-    Refuse a files mapping with more keys than the structural cap allows.
+    The cap a request actually meets: the lower of the structural and the configured one.
+
+    One expression, read both by the constraints document that publishes it as
+    `limits.effective_max_files` and by the route that enforces it, so a caller that mirrors the
+    published number cannot be refused by a different one.
+    """
+    return min(MAX_INLINE_FILE_KEYS, max_inline_files)
+
+
+def ensure_key_count_fits(count: int, *, limit: int = MAX_INLINE_FILE_KEYS) -> None:
+    """
+    Refuse a files mapping with more keys than the given cap allows.
 
     Split out of the whole-mapping validation so the model can apply it to the raw request, before
     Pydantic has validated a single entry: the cap is the one rule that needs nothing but the
     mapping's size, and applying it late is what let an oversized mapping be fully validated first.
 
-    :raises InvalidFileDataError: If the count exceeds MAX_INLINE_FILE_KEYS.
+    :param limit: Defaults to the structural cap, which is the only one the model layer can know.
+        The route passes ``effective_key_limit`` instead, which is the number a caller is promised.
+    :raises InvalidFileDataError: If the count exceeds the limit.
     """
-    if count > MAX_INLINE_FILE_KEYS:
+    if count > limit:
         raise InvalidFileDataError(
-            f"Too many files keys: {count} exceeds the limit of {MAX_INLINE_FILE_KEYS}",
-            context={"count": count, "limit": MAX_INLINE_FILE_KEYS, "rule": "too_many_keys"},
+            f"Too many files keys: {count} exceeds the limit of {limit}",
+            context={"count": count, "limit": limit, "rule": "too_many_keys"},
         )
 
 

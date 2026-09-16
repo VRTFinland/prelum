@@ -1,40 +1,38 @@
 import os
 import subprocess
 import uuid
-from collections.abc import Awaitable, Callable
 from http import HTTPStatus
-from typing import cast, override
+from typing import cast
 
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp, Message
+from starlette.types import ASGIApp, ExceptionHandler, Message, Receive, Scope, Send
 from structlog.typing import FilteringBoundLogger
 
 from app.api.routes import router
 from app.core import constants
 from app.core.config import Settings
 from app.core.errors import (
+    VALIDATION_ERRORS_BY_CODE,
     AppError,
-    InvalidFileDataError,
     InvalidRequestError,
-    InvalidTemplatePathError,
     MethodNotAllowedError,
     NotFoundError,
     RequestTooLargeError,
     ServiceUnavailableError,
-    UnsupportedFormatError,
     app_error_handler,
     for_message,
 )
 from app.core.logging import bind_request_context, clear_request_context, setup_logging
 from app.core.sentry import setup_sentry
 from app.deps import get_settings
+from app.render.renderer import resource_limit_args
 
 
 def _declared_size(request: Request) -> int | None:
@@ -51,7 +49,14 @@ def _declared_size(request: Request) -> int | None:
         return None
 
 
-class BodyLimitMiddleware(BaseHTTPMiddleware):
+# Both middlewares below are plain ASGI rather than BaseHTTPMiddleware subclasses. That base wraps
+# every request in an anyio task group and a pair of memory object streams, measured here at about
+# 190us per layer per request against a bare app answering /health in 153us — so two layers more
+# than doubled the cost of every request, for a byte counter and a header copy. /v1/render never
+# noticed it against a typst fork; /health, /metrics and /v1/constraints paid it in full.
+
+
+class BodyLimitMiddleware:
     """
     Reject an oversized request body while it is still arriving.
 
@@ -60,47 +65,88 @@ class BodyLimitMiddleware(BaseHTTPMiddleware):
     being buffered whole and then rejected.
     """
 
-    max_body: int
-
     def __init__(self, app: ASGIApp, max_body: int) -> None:
-        super().__init__(app)
-        self.max_body = max_body
+        self.app: ASGIApp = app
+        self.max_body: int = max_body
 
-    def _too_large(self, request: Request) -> RequestTooLargeError:
-        return RequestTooLargeError(limit=self.max_body, declared_size=_declared_size(request))
+    def _too_large(self, scope: Scope) -> RequestTooLargeError:
+        return RequestTooLargeError(limit=self.max_body, declared_size=_declared_size(Request(scope)))
 
-    @override
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         received = 0
-        exceeded = False
-        original_receive = request.receive
+        refused = False
 
         async def receive_with_limit() -> Message:
-            nonlocal received, exceeded
-            message = await original_receive()
+            nonlocal received, refused
+            message = await receive()
             if message["type"] != "http.request":
                 return message
 
             body = message.get("body", b"") or b""
             received += len(body)
             if received > self.max_body:
-                exceeded = True
-                raise self._too_large(request)
+                refused = True
+                raise self._too_large(scope)
 
             return message
 
-        request._receive = receive_with_limit
+        async def send_unless_refused(message: Message) -> None:
+            # FastAPI wraps anything raised while it reads the body into a bare HTTPException(400),
+            # so the error above never reaches the handler registered for it. Once the body has been
+            # refused, whatever the app produced answers a request that is not being served, so it
+            # is dropped here — nothing reaches the server — and replaced below. Dropping rather
+            # than replacing is what plain ASGI allows: there is no buffered response to swap.
+            if not refused:
+                await send(message)
+
         try:
-            response = await call_next(request)
-        except RequestTooLargeError as exc:
-            return app_error_handler(request, exc)
-        if exceeded:
-            return app_error_handler(request, self._too_large(request))
-        return response
+            await self.app(scope, receive_with_limit, send_unless_refused)
+        except RequestTooLargeError:
+            # Only the refusal above is answered here — the route that reads the body itself, with
+            # FastAPI's wrapping out of the way. Anything else raising this error has its own reason
+            # and its own response to send, and swallowing it would leave the caller with no reply.
+            if not refused:
+                raise
+        if refused:
+            await app_error_handler(Request(scope), self._too_large(scope))(scope, receive, send)
+
+
+class RequestIdMiddleware:
+    """
+    Carry a request id through the logging context and echo it back to the caller.
+
+    The caller's own x-request-id is preserved so a trace spans the services in front of Prelum;
+    absent one, a uuid4 is minted. Only `send` is wrapped: nothing here reads the body.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app: ASGIApp = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = Request(scope).headers.get("x-request-id") or str(uuid.uuid4())
+        bind_request_context(request_id)
+        # The same place request.state reads from, so a route can still reach it by that name.
+        scope.setdefault("state", {})["request_id"] = request_id
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                # Assigned rather than appended, so the header is stated once even if a response
+                # already carries one.
+                MutableHeaders(scope=message)["x-request-id"] = request_id
+            await send(message)
+
+        try:
+            await self.app(scope, receive, send_with_request_id)
+        finally:
+            clear_request_context()
 
 
 # Pydantic composes each message itself and some quote the offending value: an invalid discriminator
@@ -165,22 +211,16 @@ def _verify_render_memory_limit(settings: Settings) -> None:
     limit answers 422 to everyone and pages nobody. One fork at startup converts all of it into a
     loud boot failure.
 
-    The probe runs the real wrapper argv against the configured Typst binary, so it also catches a
-    cli_path that is missing or not executable, which is the same silent-422 failure by another
-    route.
+    The probe forks the renderer's own wrapper prefix — not a copy of it — against the configured
+    Typst binary, so it also catches a cli_path that is missing or not executable, which is the same
+    silent-422 failure by another route.
 
     :raises RuntimeError: If the probe does not exit cleanly.
     """
     if settings.max_render_memory_bytes is None:
         return
 
-    argv = [
-        str(constants.PRLIMIT_PATH),
-        f"--data={settings.max_render_memory_bytes}",
-        "--",
-        str(settings.cli_path),
-        "--version",
-    ]
+    argv = [*resource_limit_args(settings), str(settings.cli_path), "--version"]
     try:
         probe = subprocess.run(argv, capture_output=True, check=False, timeout=_PROBE_TIMEOUT_SECS)  # noqa: S603
     except (OSError, subprocess.SubprocessError) as exc:
@@ -193,6 +233,88 @@ def _verify_render_memory_limit(settings: Settings) -> None:
             f"the render memory limit probe exited {probe.returncode}; "
             f"PRELUM_MAX_RENDER_MEMORY_BYTES cannot be honoured on this deployment"
         )
+
+
+# Registered by create_app rather than defined inside it: none of the four closes over anything
+# there, and as nested functions they were most of its body and could not be reached without
+# building a whole app to drive them through a client.
+
+
+async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
+    return app_error_handler(request, exc)
+
+
+async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
+    # Starlette answers routing failures itself, and FastAPI raises a bare 400 for a body no
+    # JSON parser accepts — a number past Python's decimal-to-integer bound, say, which is not
+    # a JSONDecodeError and so never becomes a RequestValidationError. All of them bypassed the
+    # two handlers above and replied in Starlette's own {"detail": ...} shape, contradicting the
+    # published promise that every failure is application/problem+json.
+    error_class = _HTTP_EXCEPTION_ERRORS.get(exc.status_code)
+    # exc.detail is Starlette's prose and is dropped: a route may raise HTTPException with
+    # caller-derived text, and no request content may re-enter a response.
+    if error_class is None:
+        # Nothing else about an arbitrary HTTPException is contractual, so it is classified by
+        # status alone — which means the answer no longer carries the status that was raised.
+        # Its headers belong to that status (a 401's WWW-Authenticate, say) and would be a
+        # false instruction on this one, so they are dropped with it.
+        return (InvalidRequestError if exc.status_code < 500 else ServiceUnavailableError)().to_response(request)
+
+    # The status survives, so the headers still describe the answer: a 405 without its Allow
+    # no longer tells the caller what to send instead.
+    response = error_class().to_response(request)
+    response.headers.update(exc.headers or {})
+    return response
+
+
+async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
+    # Dropping "input" keeps the caller's own template source and assets — which is what it
+    # mirrors — out of responses, proxies and logs. "ctx" duplicates "msg" and exposes Pydantic
+    # internals. loc, msg and type identify the problem without either.
+    errors = cast(list[dict[str, object]], exc.errors())
+    published_errors = [
+        {"loc": _bounded_location(error), "msg": _bounded_message(error), "type": error.get("type")}
+        for error in errors[:_MAX_PUBLISHED_ERRORS]
+    ]
+    classified = next(
+        (
+            (error, error_class)
+            for error in errors
+            if (error_class := VALIDATION_ERRORS_BY_CODE.get(cast(str, error.get("type")))) is not None
+        ),
+        None,
+    )
+    error_class: type[AppError] = InvalidRequestError if classified is None else classified[1]
+
+    # The one error `detail`, `code` and `rule` all describe. `code` follows the classified
+    # files-key error wherever it sits among the errors, so the other two follow it too; with
+    # nothing classified, the first failure answers for all three. Reading them from different
+    # errors reported a rule the `detail` beside it was not about.
+    reported = classified[0] if classified is not None else (errors[0] if errors else None)
+
+    context: dict[str, object] = {"errors": published_errors}
+    if len(errors) > _MAX_PUBLISHED_ERRORS:
+        context["errors_total"] = len(errors)
+    if classified is not None:
+        # templates.py raised with a context; models.py carried it here through the Pydantic ctx.
+        # "message" is the prose already in msg.
+        lifted = cast(dict[str, object], classified[0].get("ctx", {}))
+        context.update({key: value for key, value in lifted.items() if key != "message"})
+    # An output-option rule keeps the `value_error` type every other validator failure has, so
+    # `loc`, `type` and `code` are the same whichever of them fired: without the id, the only
+    # thing separating them is `msg`, which is prose a caller may not branch on. Past
+    # _MAX_PUBLISHED_ERRORS the id is the only trace of the rule left in the response.
+    rule = cast(dict[str, object], reported.get("ctx", {})).get("rule") if reported is not None else None
+    if isinstance(rule, str):
+        context["rule"] = rule
+
+    # Validation errors carry the raised exception in ctx; encode at any depth so the response
+    # body cannot fail to serialise.
+    error = error_class(
+        _validation_detail(reported) if reported is not None else "Request validation failed",
+        context=cast(dict[str, object], jsonable_encoder(context, custom_encoder={Exception: str})),
+    )
+    return error.to_response(request)
 
 
 def create_app() -> FastAPI:
@@ -239,108 +361,10 @@ def create_app() -> FastAPI:
 
     Instrumentator().instrument(app).expose(app)
 
-    @app.middleware("http")
-    async def add_request_id(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-        request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-        bind_request_context(request_id)
-        request.state.request_id = request_id
-        try:
-            response = await call_next(request)
-        finally:
-            clear_request_context()
-        response.headers["x-request-id"] = request_id
-        return response
-
-    @app.exception_handler(AppError)
-    async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
-        return app_error_handler(request, exc)
-
-    @app.exception_handler(StarletteHTTPException)
-    async def handle_http_exception(request: Request, exc: StarletteHTTPException) -> JSONResponse:
-        # Starlette answers routing failures itself, and FastAPI raises a bare 400 for a body no
-        # JSON parser accepts — a number past Python's decimal-to-integer bound, say, which is not
-        # a JSONDecodeError and so never becomes a RequestValidationError. All of them bypassed the
-        # two handlers above and replied in Starlette's own {"detail": ...} shape, contradicting the
-        # published promise that every failure is application/problem+json.
-        error_class = _HTTP_EXCEPTION_ERRORS.get(exc.status_code)
-        # exc.detail is Starlette's prose and is dropped: a route may raise HTTPException with
-        # caller-derived text, and no request content may re-enter a response.
-        if error_class is None:
-            # Nothing else about an arbitrary HTTPException is contractual, so it is classified by
-            # status alone — which means the answer no longer carries the status that was raised.
-            # Its headers belong to that status (a 401's WWW-Authenticate, say) and would be a
-            # false instruction on this one, so they are dropped with it.
-            return (InvalidRequestError if exc.status_code < 500 else ServiceUnavailableError)().to_response(request)
-
-        # The status survives, so the headers still describe the answer: a 405 without its Allow
-        # no longer tells the caller what to send instead.
-        response = error_class().to_response(request)
-        response.headers.update(exc.headers or {})
-        return response
-
-    @app.exception_handler(RequestValidationError)
-    async def handle_validation_error(request: Request, exc: RequestValidationError) -> JSONResponse:
-        # Dropping "input" keeps the caller's own template source and assets — which is what it
-        # mirrors — out of responses, proxies and logs. "ctx" duplicates "msg" and exposes Pydantic
-        # internals. loc, msg and type identify the problem without either.
-        errors = cast(list[dict[str, object]], exc.errors())
-        published_errors = [
-            {"loc": _bounded_location(error), "msg": _bounded_message(error), "type": error.get("type")}
-            for error in errors[:_MAX_PUBLISHED_ERRORS]
-        ]
-        classified_errors: dict[str, type[AppError]] = {
-            InvalidTemplatePathError.code: InvalidTemplatePathError,
-            InvalidFileDataError.code: InvalidFileDataError,
-        }
-        classified = next(
-            (
-                (error, error_class)
-                for error in errors
-                if (error_class := classified_errors.get(cast(str, error.get("type")))) is not None
-            ),
-            None,
-        )
-        error_class: type[AppError] = InvalidRequestError if classified is None else classified[1]
-        if error_class is InvalidRequestError and any(
-            (error.get("type") == "enum" and cast(tuple[object, ...], error["loc"])[-2:] == ("output", "format"))
-            or (
-                error.get("type") == "union_tag_invalid"
-                and cast(tuple[object, ...], error["loc"])[-1:] == ("output",)
-                and cast(dict[str, object], error.get("ctx", {})).get("discriminator") == "'format'"
-            )
-            for error in errors
-        ):
-            error_class = UnsupportedFormatError
-
-        # The one error `detail`, `code` and `rule` all describe. `code` follows the classified
-        # files-key error wherever it sits among the errors, so the other two follow it too; with
-        # nothing classified, the first failure answers for all three. Reading them from different
-        # errors reported a rule the `detail` beside it was not about.
-        reported = classified[0] if classified is not None else (errors[0] if errors else None)
-
-        context: dict[str, object] = {"errors": published_errors}
-        if len(errors) > _MAX_PUBLISHED_ERRORS:
-            context["errors_total"] = len(errors)
-        if classified is not None:
-            # templates.py raised with a context; models.py carried it here through the Pydantic ctx.
-            # "message" is the prose already in msg.
-            lifted = cast(dict[str, object], classified[0].get("ctx", {}))
-            context.update({key: value for key, value in lifted.items() if key != "message"})
-        # An output-option rule keeps the `value_error` type every other validator failure has, so
-        # `loc`, `type` and `code` are the same whichever of them fired: without the id, the only
-        # thing separating them is `msg`, which is prose a caller may not branch on. Past
-        # _MAX_PUBLISHED_ERRORS the id is the only trace of the rule left in the response.
-        rule = cast(dict[str, object], reported.get("ctx", {})).get("rule") if reported is not None else None
-        if isinstance(rule, str):
-            context["rule"] = rule
-
-        # Validation errors carry the raised exception in ctx; encode at any depth so the response
-        # body cannot fail to serialise.
-        error = error_class(
-            _validation_detail(reported) if reported is not None else "Request validation failed",
-            context=cast(dict[str, object], jsonable_encoder(context, custom_encoder={Exception: str})),
-        )
-        return error.to_response(request)
+    app.add_middleware(RequestIdMiddleware)
+    app.add_exception_handler(AppError, cast(ExceptionHandler, handle_app_error))
+    app.add_exception_handler(StarletteHTTPException, cast(ExceptionHandler, handle_http_exception))
+    app.add_exception_handler(RequestValidationError, cast(ExceptionHandler, handle_validation_error))
 
     return app
 

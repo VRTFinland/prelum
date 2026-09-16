@@ -335,6 +335,20 @@ class TemplateFileTooLargeError(AppError):
         )
 
 
+# The caller-fault errors a validator re-raises through Pydantic, carrying its published code as
+# the Pydantic error type. models.py converts these and main.py maps them back, so one tuple keeps
+# the two from disagreeing: a class added to the conversion but not the mapping would answer
+# `invalid_request` with the converted error's context still attached, which is hard to notice
+# because the body still looks right.
+VALIDATION_ERRORS: tuple[type[AppError], ...] = (
+    InvalidTemplatePathError,
+    InvalidFileDataError,
+    UnsupportedFormatError,
+)
+
+VALIDATION_ERRORS_BY_CODE: dict[str, type[AppError]] = {cls.code: cls for cls in VALIDATION_ERRORS}
+
+
 def app_error_handler(request: Request, exc: AppError) -> JSONResponse:
     logger = cast(FilteringBoundLogger, structlog.get_logger())
     log_method: Callable[..., None] = logger.error if exc.is_server_fault else logger.warning

@@ -7,16 +7,15 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.main import app
 from app.models import RenderRequest
 from scripts.render_examples import EXAMPLE_SET, Example, example_data, example_files
+from tests.conftest import TOKEN
 
 EXAMPLES = Path(__file__).resolve().parent.parent / "examples"
-TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
 
 _REGENERATE_HINT = (
     "render-request.json is a generated file, not a hand-maintained one: rerun "
-    "`uv run python scripts/regenerate-example-request.py` after editing the .typ files."
+    "`make regenerate-examples` after editing the .typ files."
 )
 
 
@@ -41,9 +40,8 @@ def test_example_request_is_a_valid_render_request():
 
 
 @pytest.mark.integration
-def test_example_request_renders_a_pdf_through_the_api():
-    with TestClient(app) as client:
-        response = client.post("/v1/render", json=_request_body(), headers=TOKEN)
+def test_example_request_renders_a_pdf_through_the_api(lifespan_client: TestClient):
+    response = lifespan_client.post("/v1/render", json=_request_body(), headers=TOKEN)
 
     assert response.status_code == 200
     assert response.headers["content-type"] == "application/pdf"
@@ -52,7 +50,7 @@ def test_example_request_renders_a_pdf_through_the_api():
 
 @pytest.mark.integration
 @pytest.mark.parametrize("example", EXAMPLE_SET, ids=lambda example: example.name)
-def test_site_example_renders_through_the_api(example: Example):
+def test_site_example_renders_through_the_api(example: Example, lifespan_client: TestClient):
     """Every published example must survive the real endpoint, not only the renderer it is built with."""
     body = {
         "source": (EXAMPLES / example.name / "main.typ").read_text(encoding="utf-8"),
@@ -61,8 +59,7 @@ def test_site_example_renders_through_the_api(example: Example):
         "output": {"format": "pdf"},
     }
 
-    with TestClient(app) as client:
-        response = client.post("/v1/render", json=body, headers=TOKEN)
+    response = lifespan_client.post("/v1/render", json=body, headers=TOKEN)
 
     assert response.status_code == 200, response.text
     assert response.content.startswith(b"%PDF")

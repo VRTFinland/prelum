@@ -46,13 +46,14 @@ jobs:
           tags: prelum:test-${{ github.run_id }}
           cache-from: type=gha,scope=prelum-linux-amd64
           cache-to: type=gha,mode=max,scope=prelum-linux-amd64
-      - name: Run lint, type-check, and tests
+      - name: Run lint, format check, type-check, and tests
         run: |
           # Separate tests simulate the optional Sentry dependency being absent.
           docker run --rm prelum:test-${{ github.run_id }} sh -c \
             "uv sync --locked --extra sentry \
             && uv run ruff check . \
-            && uv run ty check app \
+            && uv run ruff format --check . \
+            && uv run ty check app scripts \
             && uv run pytest"
 
   build:

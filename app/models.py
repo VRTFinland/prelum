@@ -2,14 +2,16 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, LiteralString, NoReturn, cast
+from typing import Annotated, Any, ClassVar, Literal, LiteralString, NoReturn, cast, override
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
 from app.core.errors import Origin
 
-type JSONValue = str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | Mapping[str, JSONValue] | None
+# Mapping covers dict, so the concrete type is not spelled again; a RenderJob carries the
+# request's data as the Mapping the model validated it into.
+type JSONValue = str | int | float | bool | list[JSONValue] | Mapping[str, JSONValue] | None
 
 
 class OutputFormat(StrEnum):
@@ -78,6 +80,26 @@ class Problem(BaseModel):
     context: dict[str, object]
 
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PublishedDocument(BaseModel):
+    """
+    A document Prelum publishes both over HTTP and as a static artefact under docs/api/.
+
+    Exists so the two are the same document rather than two renderings of it: the endpoint and the
+    exporter both go through `published()`, and neither restates the shape the subclass declares.
+    """
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+    def published(self) -> dict[str, Any]:
+        """
+        The document as a caller receives it: JSON-ready, with absent optional fields omitted.
+
+        exclude_none matches `response_model_exclude_none` on the endpoint, so an accepted
+        conformance vector carries no rejection fields in the artefact either.
+        """
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class ConstraintSetRule(BaseModel):
@@ -188,7 +210,7 @@ class PageSelectionRules(BaseModel):
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
-class OutputRulesDocument(BaseModel):
+class OutputRulesDocument(PublishedDocument):
     """The deployment-independent output-option contract, also exported as output-rules.json."""
 
     output_rules_version: int
@@ -200,11 +222,14 @@ class OutputRulesDocument(BaseModel):
     rules: list[OutputRule]
     conformance_vectors: list[OutputConformanceVector]
 
-    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
+class FilesKeyRules(PublishedDocument):
+    """
+    The deployment-independent files-key contract, also exported as files-key-rules.json.
 
-class ConstraintsResponse(BaseModel):
-    """The complete client contract returned by ``GET /v1/constraints``."""
+    Everything here is a property of the code rather than of the deployment, which is what makes it
+    safe to write to a static file. The limits an operator can change arrive with the subclass.
+    """
 
     rules_version: int
     key_pattern: str
@@ -219,6 +244,14 @@ class ConstraintsResponse(BaseModel):
     case_sensitivity: str
     set_rules: list[ConstraintSetRule]
     conformance_vectors: list[ConstraintConformanceVector]
+
+
+# Inherits the files-key rules rather than nesting them, so one fetch answers a caller's whole
+# pre-dispatch contract without it having to reach into a sub-object for the half that is static.
+# The docstring below is published as this schema's description, so it says only what a caller needs.
+class ConstraintsResponse(FilesKeyRules):
+    """The complete client contract returned by ``GET /v1/constraints``."""
+
     limits: ConstraintLimits
     # Nested rather than merged into this document's own fields, and carrying its own version
     # counter: the two rule sets change at different rates, so a shared `rules_version` would send
@@ -226,17 +259,35 @@ class ConstraintsResponse(BaseModel):
     # both, which merging was the only other way to achieve.
     output_rules: OutputRulesDocument
 
-    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
-
 
 # Named so the published document can list the archive formats without a second spelling of "zip".
 type ArchiveFormat = Literal["zip"]
 
 
-class _RenderOutputBase(BaseModel):
+class RenderOutputBase(BaseModel):
+    """
+    What every output shares, and what each format must declare about itself.
+
+    `extension`, `content_type` and `cli_args` live here rather than in the renderer so that adding
+    a format is one class: there is no second table of extensions, no third of media types, and no
+    isinstance ladder deciding which flags to pass. Public because the renderer narrows to it.
+    """
+
     filename: str | None = None
 
     model_config: ClassVar[ConfigDict] = _STRICT
+
+    extension: ClassVar[str]
+    content_type: ClassVar[str]
+
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        """
+        The typst flags this output needs beyond the project-wide ones.
+
+        :param page_selection: The archive's bounded selection, which replaces the model's own page
+            for a multi-page run; ignored by a format that cannot be archived.
+        """
+        return ()
 
 
 # Public because app/core/output_rules.py publishes each of them, and a limit with two spellings is
@@ -411,8 +462,10 @@ def _validate_page_selection(value: str) -> str:
 type PageSelection = Annotated[str, AfterValidator(_validate_page_selection)]
 
 
-class PdfOutput(_RenderOutputBase):
+class PdfOutput(RenderOutputBase):
     format: Literal[OutputFormat.pdf] = OutputFormat.pdf
+    extension: ClassVar[str] = "pdf"
+    content_type: ClassVar[str] = "application/pdf"
     version: PdfVersion | None = None
     standards: list[PdfStandard] = Field(default_factory=list, max_length=MAX_PDF_STANDARDS)
     pages: PageSelection | None = None
@@ -443,28 +496,75 @@ class PdfOutput(_RenderOutputBase):
 
         return self
 
+    @override
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        """A PDF cannot be archived, so it has no selection but its own `pages`."""
+        args: list[str] = []
+        standards = [standard.value for standard in self.standards]
+        if self.version is not None:
+            standards.insert(0, self.version.value)
+        if standards:
+            args.extend(("--pdf-standard", ",".join(standards)))
+        if self.pages is not None:
+            args.extend(("--pages", self.pages))
+        return tuple(args)
 
-class _ImageOutputBase(_RenderOutputBase):
+
+class ImageOutput(RenderOutputBase):
+    """The options every raster or vector image output shares, and the answer to "is this an image"."""
+
     page: int | None = Field(default=None, ge=MIN_IMAGE_PAGE, strict=True)
     archive: ArchiveFormat | None = None
     pages: PageSelection | None = None
 
     @model_validator(mode="after")
-    def validate_image_options(self) -> _ImageOutputBase:
+    def validate_image_options(self) -> ImageOutput:
         if self.archive is None and self.pages is not None:
             _reject(OutputRuleId.pages_requires_archive, "pages requires archive 'zip'")
         if self.archive is not None and self.page is not None:
             _reject(OutputRuleId.page_with_archive, "page cannot be combined with an archive")
         return self
 
+    @override
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        selected_pages = page_selection or (str(self.page) if self.page is not None else None)
+        return () if selected_pages is None else ("--pages", selected_pages)
 
-class PngOutput(_ImageOutputBase):
+
+class PngOutput(ImageOutput):
     format: Literal[OutputFormat.png] = OutputFormat.png
+    extension: ClassVar[str] = "png"
+    content_type: ClassVar[str] = "image/png"
     ppi: int = Field(default=DEFAULT_PNG_PPI, ge=MIN_PNG_PPI, le=MAX_PNG_PPI, strict=True)
 
+    @override
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        return ("--ppi", str(self.ppi), *super().cli_args(page_selection=page_selection))
 
-class SvgOutput(_ImageOutputBase):
+
+class SvgOutput(ImageOutput):
     format: Literal[OutputFormat.svg] = OutputFormat.svg
+    extension: ClassVar[str] = "svg"
+    content_type: ClassVar[str] = "image/svg+xml"
+
+
+def _settle_output_format(value: object) -> object:
+    """
+    Default the format and refuse one no model claims, before the union discriminates on it.
+
+    A field validator rather than a validator on RenderRequest: at the model level this ran as a
+    mode="before" pass over the whole body, so raising there abandoned the request's other errors
+    and reported the format's location as the body rather than as `output`. Here the union's own
+    field is the location, and a request that is wrong in several ways still comes back with all
+    of them — which is what lets a caller fix them in one round trip.
+    """
+    if not isinstance(value, dict):
+        return value
+    output = cast(dict[str, object], value)
+    if "format" not in output:
+        return {"format": OutputFormat.pdf, **output}
+    _as_validation_error(lambda: _require_a_known_output_format(output["format"]))
+    return value
 
 
 type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discriminator="format")]
@@ -472,7 +572,7 @@ type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discrimin
 # Which model validates each `format`, and so which rules apply to it. Both sets are published, so
 # that a mirror never reads "not pdf, therefore image": a fourth format added to neither set would
 # silently inherit the image rules. Every OutputFormat must be claimed by exactly one of them.
-OUTPUT_MODELS: dict[OutputFormat, type[_RenderOutputBase]] = {
+OUTPUT_MODELS: dict[OutputFormat, type[RenderOutputBase]] = {
     OutputFormat.pdf: PdfOutput,
     OutputFormat.png: PngOutput,
     OutputFormat.svg: SvgOutput,
@@ -481,44 +581,57 @@ PDF_OUTPUT_FORMATS = frozenset(
     output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, PdfOutput)
 )
 IMAGE_OUTPUT_FORMATS = frozenset(
-    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, _ImageOutputBase)
+    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, ImageOutput)
 )
+
+# The wire spellings OUTPUT_MODELS claims, for the check that runs before the discriminated union.
+_OUTPUT_FORMAT_VALUES = frozenset(output_format.value for output_format in OUTPUT_MODELS)
 
 
 def _as_validation_error(check: Callable[[], object]) -> None:
     """
-    Run a key-policy check, re-raising its failure as a Pydantic validation error.
+    Run a caller-fault check, re-raising its failure as a Pydantic validation error.
 
-    Preserves templates.py's caller-fault classification through Pydantic so the HTTP boundary can
-    return the matching published problem code without reimplementing key policy. The error's
-    context rides along in ctx; the handler lifts it out again.
+    Preserves the raiser's classification through Pydantic so the HTTP boundary can return the
+    matching published problem code without reimplementing the rule. The error's context rides
+    along in ctx; the handler lifts it out again. Which classes travel this way is errors.py's
+    VALIDATION_ERRORS, which the handler reads too.
     """
-    from app.core.errors import InvalidFileDataError, InvalidTemplatePathError
+    from app.core.errors import VALIDATION_ERRORS
 
     try:
         _ = check()
-    except (InvalidTemplatePathError, InvalidFileDataError) as exc:
+    except VALIDATION_ERRORS as exc:
         error_type = cast(LiteralString, exc.code)
         raise PydanticCustomError(error_type, "{message}", {"message": str(exc), **exc.context}) from exc
+
+
+def _require_a_known_output_format(value: object) -> None:
+    """
+    Refuse a format no output model claims, naming the offending value at the end of the message.
+
+    Decided here rather than at the HTTP boundary, which used to recover this one fact by matching
+    Pydantic's own error shapes: an `enum` error located under output.format, or a
+    `union_tag_invalid` whose ctx names the discriminator — quotes included. A fourth format, or a
+    Pydantic release that reshaped either, would silently have degraded the answer from
+    `unsupported_format` back to `invalid_request`.
+
+    :raises UnsupportedFormatError: If the format is not one OUTPUT_MODELS claims.
+    """
+    from app.core.errors import UnsupportedFormatError, for_message
+
+    if isinstance(value, OutputFormat) or (isinstance(value, str) and value in _OUTPUT_FORMAT_VALUES):
+        return
+    raise UnsupportedFormatError(f"Unsupported output format: {for_message(str(value))}")
 
 
 class RenderRequest(BaseModel):
     source: str = Field(min_length=1)
     files: dict[str, RenderFile] = Field(default_factory=dict)
     data: JSONValue = Field(default_factory=dict)
-    output: RenderOutput = Field(default_factory=PdfOutput)
+    output: Annotated[RenderOutput, BeforeValidator(_settle_output_format)] = Field(default_factory=PdfOutput)
 
     model_config: ClassVar[ConfigDict] = _STRICT
-
-    @model_validator(mode="before")
-    @classmethod
-    def default_output_format(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        output = value.get("output")
-        if not isinstance(output, dict) or "format" in output:
-            return value
-        return {**value, "output": {"format": OutputFormat.pdf, **output}}
 
     @model_validator(mode="before")
     @classmethod

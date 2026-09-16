@@ -9,7 +9,6 @@ import sys
 import zipfile
 from collections.abc import Callable, Mapping
 from pathlib import Path
-from typing import cast
 
 import pytest
 
@@ -29,6 +28,7 @@ from app.core.errors import (
     TooManyOutputFilesError,
 )
 from app.models import (
+    OUTPUT_MODELS,
     JSONValue,
     OutputFormat,
     PdfOutput,
@@ -39,10 +39,9 @@ from app.models import (
     RenderRequest,
     SvgOutput,
 )
-from app.render.renderer import FORMAT_MAP, TypstRenderer, _ProjectLayout
+from app.render.renderer import TypstRenderer, _OutputPlan, _ProjectLayout, resource_limit_args
+from tests.conftest import FakeProc, FakeTypst
 
-_TYPST_ARG_TEMPLATE = -2
-_TYPST_ARG_OUTPUT = -1
 _OMITTED = object()
 
 
@@ -76,21 +75,15 @@ def _layout(tmp_path: Path) -> _ProjectLayout:
     )
 
 
-class FakeProc:
-    returncode = 0
-
-    def kill(self) -> None:
-        pass
-
-    async def wait(self) -> int:
-        # asyncio.Process.wait() returns the settled exit code and returncode then reports the same
-        # value. A subclass overriding only returncode must not be able to make the two disagree.
-        return self.returncode
+def _plan(tmp_path: Path, output: RenderOutput | None = None) -> _OutputPlan:
+    """The compile plan a render would have built, for the tests that drive _run_typst directly."""
+    return TypstRenderer(Settings())._output_plan(_layout(tmp_path), output or PdfOutput())
 
 
 @pytest.fixture
-def renderer() -> TypstRenderer:
-    return TypstRenderer(Settings())
+def renderer(make_renderer: Callable[..., TypstRenderer]) -> TypstRenderer:
+    """A default-configured renderer, for the tests that need no settings overrides."""
+    return make_renderer()
 
 
 def test_escape_string_preserves_hashes_inside_typst_strings(renderer: TypstRenderer):
@@ -106,8 +99,18 @@ def test_escape_string_handles_unsafe_unicode(renderer: TypstRenderer):
     assert renderer._escape_string("a\x00\u202eb") == r"a\u{0000}b"
 
 
-def test_every_output_format_has_render_metadata():
-    assert set(FORMAT_MAP) == set(OutputFormat)
+def test_every_output_format_is_claimed_by_exactly_one_model_that_describes_itself():
+    """
+    The invariant OUTPUT_MODELS's own comment asserts, now that it is the only format registry.
+
+    A format missing from it is one the renderer cannot plan an output for; one whose model omits
+    an extension or a media type would reach the response with neither.
+    """
+    assert set(OUTPUT_MODELS) == set(OutputFormat)
+    for output_format, model in OUTPUT_MODELS.items():
+        assert model.extension, output_format
+        assert model.content_type, output_format
+    assert len({model.extension for model in OUTPUT_MODELS.values()}) == len(OUTPUT_MODELS)
 
 
 @pytest.mark.parametrize(
@@ -191,92 +194,63 @@ def test_string_too_large_from_a_bare_string_has_an_empty_path(make_renderer: Ca
 @pytest.mark.asyncio
 async def test_render_binds_data_without_wrapping_or_merging(
     data: JSONValue,
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-    captured: dict[str, str] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        captured["source"] = Path(args[_TYPST_ARG_TEMPLATE]).read_text(encoding="utf-8")
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     await renderer.render(_job(data=data))
 
     typst_value = renderer._json_to_typst(data)
-    assert captured["source"].startswith(f"#let request = {typst_value};\n#let data = request;\n")
+    assert typst.call.source.startswith(f"#let request = {typst_value};\n#let data = request;\n")
 
 
 @pytest.mark.asyncio
 async def test_data_image_string_is_bound_verbatim_and_creates_no_implicit_file(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
     data_image = "data:image/png;base64,aGVsbG8="
-    captured: dict[str, object] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        project = Path(args[_TYPST_ARG_TEMPLATE]).parent
-        captured["files"] = sorted(
-            path.relative_to(project).as_posix() for path in project.rglob("*") if path.is_file()
-        )
-        captured["source"] = Path(args[_TYPST_ARG_TEMPLATE]).read_text(encoding="utf-8")
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     await renderer.render(_job(data={"logo": data_image}))
 
-    assert captured["files"] == [INLINE_TEMPLATE_FILENAME]
-    assert data_image in captured["source"]
+    assert list(typst.call.files) == [INLINE_TEMPLATE_FILENAME]
+    assert data_image in typst.call.source
 
 
 @pytest.mark.asyncio
 async def test_render_strips_unencodable_surrogates_from_data(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-    captured: dict[str, str] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        captured["source"] = Path(args[_TYPST_ARG_TEMPLATE]).read_text(encoding="utf-8")
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     await renderer.render(_job(data={"name": "a\ud800b"}))
 
-    assert '("name": "ab")' in captured["source"]
+    assert '("name": "ab")' in typst.call.source
 
 
 @pytest.mark.asyncio
 async def test_render_writes_text_and_binary_files(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
     binary = b"\x89PNG\r\n\x1a\nfake"
-    captured: dict[str, bytes] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        project = Path(args[_TYPST_ARG_TEMPLATE]).parent
-        captured["text"] = (project / "lib/x.typ").read_bytes()
-        captured["binary"] = (project / "assets/logo.png").read_bytes()
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     files = {
         "lib/x.typ": RenderFile(encoding="text", content="#let x = 1"),
         "assets/logo.png": RenderFile(encoding="base64", content=base64.b64encode(binary).decode()),
     }
     await renderer.render(_job(files=files))
 
-    assert captured == {"text": b"#let x = 1", "binary": binary}
+    assert typst.call.files["lib/x.typ"] == b"#let x = 1"
+    assert typst.call.files["assets/logo.png"] == binary
 
 
 @pytest.mark.asyncio
@@ -327,29 +301,15 @@ async def test_render_rejects_oversized_base64_before_decoding(
 
 @pytest.mark.asyncio
 async def test_render_accepts_base64_at_exactly_the_limit(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_inline_file_bytes=1024)
-    captured: dict[str, int] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        captured["size"] = (Path(args[_TYPST_ARG_TEMPLATE]).parent / "asset.bin").stat().st_size
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     encoded = base64.b64encode(b"A" * 1024).decode()
     await renderer.render(_job(files={"asset.bin": RenderFile(encoding="base64", content=encoded)}))
-    assert captured["size"] == 1024
-
-
-@pytest.mark.asyncio
-async def test_render_rejects_too_many_files(make_renderer: Callable[..., TypstRenderer]):
-    renderer = make_renderer(max_inline_files=2)
-    files = {f"lib/{index}.typ": RenderFile(encoding="text", content="x") for index in range(3)}
-    with pytest.raises(InvalidFileDataError):
-        await renderer.render(_job(files=files))
+    assert len(typst.call.files["asset.bin"]) == 1024
 
 
 @pytest.mark.asyncio
@@ -388,16 +348,12 @@ async def test_render_rejects_oversized_source(make_renderer: Callable[..., Typs
 
 @pytest.mark.asyncio
 async def test_render_minimal_job_and_output_filename(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
+    _ = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     result = await renderer.render(_job(filename="../report.untrusted"))
     assert result.bytes == b"%PDF-fake"
     assert result.content_type == "application/pdf"
@@ -406,16 +362,12 @@ async def test_render_minimal_job_and_output_filename(
 
 @pytest.mark.asyncio
 async def test_returned_filename_is_bounded(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
+    _ = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     result = await renderer.render(_job(filename="A" * 5000 + ".pdf"))
     assert len(result.filename) <= 255
     assert result.filename.endswith(".pdf")
@@ -428,8 +380,8 @@ async def test_oversized_output_is_rejected_before_it_is_read(
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_output_bytes=1024)
-    output = tmp_path / "oversized.pdf"
-    output.write_bytes(b"x" * 1025)
+    plan = _plan(tmp_path)
+    plan.typst_output.write_bytes(b"x" * 1025)
 
     def fail_on_read(_path: Path) -> bytes:
         raise AssertionError("oversized output was read into memory")
@@ -437,7 +389,38 @@ async def test_oversized_output_is_rejected_before_it_is_read(
     monkeypatch.setattr(Path, "read_bytes", fail_on_read)
 
     with pytest.raises(OutputTooLargeError, match="1025"):
-        await renderer._finalise_output(output, PdfOutput(), "pdf", "application/pdf")
+        await renderer._finalise_output(plan)
+
+
+@pytest.mark.asyncio
+async def test_the_temporary_project_is_removed_after_a_successful_render(
+    fake_typst: Callable[..., FakeTypst],
+    tmp_path: Path,
+    make_renderer: Callable[..., TypstRenderer],
+):
+    """Cleanup is explicit code now, not TemporaryDirectory's __exit__, so it is pinned here."""
+    renderer = make_renderer(temp_root=tmp_path)
+    _ = fake_typst()
+
+    _ = await renderer.render(_job(files={"lib/x.typ": RenderFile(encoding="text", content="#let x = 1")}))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_the_temporary_project_is_removed_when_the_render_fails(
+    fake_typst: Callable[..., FakeTypst],
+    tmp_path: Path,
+    make_renderer: Callable[..., TypstRenderer],
+):
+    """A compile failure must not leak the project tree: the tree is where caller source lives."""
+    renderer = make_renderer(temp_root=tmp_path)
+    _ = fake_typst(content=None)
+
+    with pytest.raises(RenderError, match="did not produce output"):
+        _ = await renderer.render(_job())
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -458,30 +441,15 @@ async def test_debug_copies_are_bounded_and_unique(tmp_path: Path, make_renderer
 
 @pytest.mark.asyncio
 async def test_run_typst_kills_process_on_cancel(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
+    proc = FakeProc(blocks_for=1)
+    _ = fake_typst(proc=proc, content=None)
 
-    class BlockingProc(FakeProc):
-        killed = False
-
-        async def wait(self):
-            if not self.killed:
-                await asyncio.sleep(1)
-            return 0
-
-        def kill(self):
-            self.killed = True
-
-    proc = BlockingProc()
-
-    async def fake_run(*_args, **_kwargs):
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    task = asyncio.create_task(renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf"))
+    task = asyncio.create_task(renderer._run_typst(_layout(tmp_path), _plan(tmp_path)))
     await asyncio.sleep(0.01)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -491,70 +459,44 @@ async def test_run_typst_kills_process_on_cancel(
 
 @pytest.mark.asyncio
 async def test_run_typst_times_out(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(render_timeout_secs=1)
+    _ = fake_typst(proc=FakeProc(blocks_for=2), content=None)
 
-    class BlockingProc(FakeProc):
-        killed = False
-
-        async def wait(self):
-            if not self.killed:
-                await asyncio.sleep(2)
-            return 0
-
-        def kill(self):
-            self.killed = True
-
-    async def fake_run(*_args, **_kwargs):
-        return BlockingProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(RenderTimeoutError):
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
 
 @pytest.mark.asyncio
 async def test_run_typst_classifies_compile_failure_as_caller_error(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
+    typst = fake_typst(proc=FakeProc(returncode=1), content=None)
 
-    class FailingProc(FakeProc):
-        returncode = 1
-
-    process_options = {}
-
-    async def fake_run(*_args, **kwargs):
-        process_options.update(kwargs)
-        return FailingProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(InlineTemplateError) as exc_info:
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
     assert exc_info.value.status < 500
-    assert process_options["stdout"] is asyncio.subprocess.DEVNULL
-    assert process_options["stderr"] is asyncio.subprocess.DEVNULL
+    assert typst.call.kwargs["stdout"] is asyncio.subprocess.DEVNULL
+    assert typst.call.kwargs["stderr"] is asyncio.subprocess.DEVNULL
 
 
 @pytest.mark.asyncio
 async def test_run_typst_requires_an_output(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
+    _ = fake_typst(content=None)
 
-    async def fake_run(*_args, **_kwargs):
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(RenderError, match="did not produce output"):
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
 
 def test_typst_env_blocks_proxies_by_default(renderer: TypstRenderer):
@@ -622,29 +564,20 @@ def test_typst_env_keeps_path_so_a_bare_cli_path_still_resolves(renderer: TypstR
 
 @pytest.mark.asyncio
 async def test_run_typst_passes_root_font_and_package_controls(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-    captured: dict[str, object] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **kwargs):
-        captured["args"] = args
-        captured["env"] = kwargs["env"]
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     await renderer.render(_job())
 
-    args = captured["args"]
-    assert isinstance(args, tuple)
-    project = str(Path(args[_TYPST_ARG_TEMPLATE]).parent)
-    assert args[args.index("--root") + 1] == project
-    assert args[args.index("--font-path") + 1] == project
-    assert "--package-path" in args
-    assert "--package-cache-path" in args
-    assert isinstance(captured["env"], dict)
+    argv, project = typst.call.argv, str(typst.call.project_root)
+    assert argv[argv.index("--root") + 1] == project
+    assert argv[argv.index("--font-path") + 1] == project
+    assert "--package-path" in argv
+    assert "--package-cache-path" in argv
+    assert isinstance(typst.call.kwargs["env"], dict)
 
 
 @pytest.mark.parametrize(
@@ -662,31 +595,24 @@ async def test_run_typst_passes_root_font_and_package_controls(
 async def test_run_typst_passes_format_specific_output_options(
     output_data: dict[str, object],
     expected_args: tuple[str, ...],
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-    captured: dict[str, tuple[object, ...]] = {}
-
-    async def fake_run(*args, **_kwargs):
-        captured["args"] = args
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"output")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    typst = fake_typst(content=b"output")
     output = RenderRequest.model_validate({"source": '#text("hi")', "output": output_data}).output
 
     await renderer.render(_job(output=output))
 
-    args = captured["args"]
-    option_start = args.index(expected_args[0])
-    assert args[option_start : option_start + len(expected_args)] == expected_args
+    argv = typst.call.argv
+    option_start = argv.index(expected_args[0])
+    assert argv[option_start : option_start + len(expected_args)] == expected_args
 
 
 @pytest.mark.asyncio
 async def test_run_typst_adds_configured_read_only_resource_paths(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     fonts = tmp_path / "fonts"
@@ -694,48 +620,31 @@ async def test_run_typst_adds_configured_read_only_resource_paths(
     fonts.mkdir()
     packages.mkdir()
     renderer = make_renderer(font_path=fonts, local_package_path=packages)
-    captured: dict[str, tuple[object, ...]] = {}
-
-    async def fake_run(*args, **_kwargs):
-        captured["args"] = args
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    typst = fake_typst()
 
     await renderer.render(_job())
 
-    args = captured["args"]
-    project = str(Path(args[_TYPST_ARG_TEMPLATE]).parent)
-    assert args[args.index("--font-path") + 1] == os.pathsep.join((project, str(fonts)))
-    assert args[args.index("--package-path") + 1] == str(packages)
-    assert args[args.index("--package-cache-path") + 1] != str(packages)
+    argv, project = typst.call.argv, str(typst.call.project_root)
+    assert argv[argv.index("--font-path") + 1] == os.pathsep.join((project, str(fonts)))
+    assert argv[argv.index("--package-path") + 1] == str(packages)
+    assert argv[argv.index("--package-cache-path") + 1] != str(packages)
 
 
 @pytest.mark.asyncio
 async def test_image_archive_uses_one_bounded_typst_invocation(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_output_files=3)
-    captured: dict[str, tuple[object, ...]] = {}
-
-    async def fake_run(*args, **_kwargs):
-        captured["args"] = args
-        output_template = str(args[_TYPST_ARG_OUTPUT])
-        Path(output_template.replace("{p}", "1")).write_bytes(b"page one")
-        Path(output_template.replace("{p}", "3")).write_bytes(b"page three")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    typst = fake_typst(pages={1: b"page one", 3: b"page three"})
     output = PngOutput(archive="zip", pages="1,3-", ppi=72)
 
     result = await renderer.render(_job(output=output))
 
-    args = captured["args"]
-    assert str(args[_TYPST_ARG_OUTPUT]).endswith("output-{p}.png")
-    assert args[args.index("--pages") + 1] == "1,3,4,5"
-    assert args[args.index("--ppi") + 1] == "72"
+    argv = typst.call.argv
+    assert typst.call.output.name.endswith("output-{p}.png")
+    assert argv[argv.index("--pages") + 1] == "1,3,4,5"
+    assert argv[argv.index("--ppi") + 1] == "72"
     assert result.content_type == "application/zip"
     assert result.filename == "rendered.zip"
     assert result.disposition == "attachment"
@@ -743,18 +652,11 @@ async def test_image_archive_uses_one_bounded_typst_invocation(
 
 @pytest.mark.asyncio
 async def test_image_archive_orders_and_safely_names_physical_pages(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-
-    async def fake_run(*args, **_kwargs):
-        output_template = str(args[_TYPST_ARG_OUTPUT])
-        Path(output_template.replace("{p}", "10")).write_bytes(b"ten")
-        Path(output_template.replace("{p}", "2")).write_bytes(b"two")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(pages={10: b"ten", 2: b"two"})
 
     result = await renderer.render(_job(output=SvgOutput(archive="zip", pages="2,10", filename="../selected.svg")))
 
@@ -769,18 +671,11 @@ async def test_image_archive_orders_and_safely_names_physical_pages(
 
 @pytest.mark.asyncio
 async def test_image_archive_rejects_the_output_file_sentinel(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_output_files=2)
-
-    async def fake_run(*args, **_kwargs):
-        output_template = str(args[_TYPST_ARG_OUTPUT])
-        for page in range(1, 4):
-            Path(output_template.replace("{p}", str(page))).write_bytes(b"page")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(pages=dict.fromkeys(range(1, 4), b"page"))
 
     with pytest.raises(TooManyOutputFilesError) as exc_info:
         await renderer.render(_job(output=SvgOutput(archive="zip")))
@@ -793,37 +688,28 @@ async def test_image_archive_rejects_the_output_file_sentinel(
 
 @pytest.mark.asyncio
 async def test_page_selection_beyond_the_limit_fails_before_rendering(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_output_files=2)
-
-    async def must_not_run(*_args, **_kwargs):
-        raise AssertionError("no render may be spent on a selection that cannot fit the archive")
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", must_not_run)
+    typst = fake_typst()
 
     with pytest.raises(PageSelectionTooLargeError) as exc_info:
         await renderer.render(_job(output=PngOutput(archive="zip", pages="1-3")))
 
     assert exc_info.value.code == "page_selection_too_large"
     assert exc_info.value.context == {"count": 3, "limit": 2}
+    assert typst.calls == [], "no render may be spent on a selection that cannot fit the archive"
 
 
 @pytest.mark.asyncio
 async def test_image_archive_rejects_aggregate_output_before_reading_files(
+    fake_typst: Callable[..., FakeTypst],
     monkeypatch: pytest.MonkeyPatch,
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_output_bytes=1024)
-
-    async def fake_run(*args, **_kwargs):
-        output_template = str(args[_TYPST_ARG_OUTPUT])
-        Path(output_template.replace("{p}", "1")).write_bytes(b"a" * 600)
-        Path(output_template.replace("{p}", "2")).write_bytes(b"b" * 425)
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(pages={1: b"a" * 600, 2: b"b" * 425})
 
     def fail_on_read(_path: Path) -> bytes:
         raise AssertionError("oversized page files must not be read into memory")
@@ -842,15 +728,11 @@ def test_output_size_accepts_the_exact_configured_boundary(make_renderer: Callab
 
 @pytest.mark.asyncio
 async def test_image_archive_rejects_an_explicit_selection_matching_no_page(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-
-    async def fake_run(*_args, **_kwargs):
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(content=None)
 
     with pytest.raises(InlineTemplateError):
         await renderer.render(_job(output=SvgOutput(archive="zip", pages="99")))
@@ -858,15 +740,11 @@ async def test_image_archive_rejects_an_explicit_selection_matching_no_page(
 
 @pytest.mark.asyncio
 async def test_image_archive_treats_unexpected_empty_all_page_output_as_a_server_fault(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-
-    async def fake_run(*_args, **_kwargs):
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(content=None)
 
     with pytest.raises(RenderError, match="did not produce output"):
         await renderer.render(_job(output=SvgOutput(archive="zip")))
@@ -882,7 +760,7 @@ def test_image_archive_rejects_final_zip_bytes_over_the_output_limit(
         (tmp_path / f"output-{page}.svg").write_bytes(b"")
 
     with pytest.raises(OutputTooLargeError):
-        renderer._create_archive(output_template, tmp_path / "output.zip", "svg")
+        renderer._create_archive(renderer._collect_page_outputs(output_template), tmp_path / "output.zip", "svg")
 
 
 def test_image_archive_requires_at_least_one_page_file(
@@ -892,7 +770,7 @@ def test_image_archive_requires_at_least_one_page_file(
     renderer = make_renderer()
 
     with pytest.raises(RenderError, match="did not produce page output"):
-        renderer._create_archive(tmp_path / "output-{p}.svg", tmp_path / "output.zip", "svg")
+        renderer._create_archive([], tmp_path / "output.zip", "svg")
 
 
 def test_image_archive_rejects_a_matching_symlink(
@@ -911,18 +789,12 @@ def test_image_archive_rejects_a_matching_symlink(
 @pytest.mark.asyncio
 async def test_image_archive_debug_copy_contains_only_the_completed_archive(
     tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     make_renderer: Callable[..., TypstRenderer],
 ):
     debug_dir = tmp_path / "debug"
     renderer = make_renderer(debug_output_dir=debug_dir)
-
-    async def fake_run(*args, **_kwargs):
-        output_template = str(args[_TYPST_ARG_OUTPUT])
-        Path(output_template.replace("{p}", "1")).write_bytes(b"svg")
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(pages={1: b"svg"})
 
     result = await renderer.render(_job(output=SvgOutput(archive="zip", pages="1")))
 
@@ -934,25 +806,21 @@ async def test_image_archive_debug_copy_contains_only_the_completed_archive(
 
 @pytest.mark.asyncio
 async def test_explicit_missing_image_page_is_a_caller_compile_failure(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer()
-
-    async def fake_run(*_args, **_kwargs):
-        return FakeProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = fake_typst(content=None)
 
     with pytest.raises(InlineTemplateError):
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.svg", SvgOutput(page=99))
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path, SvgOutput(page=99)))
 
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_full_pipeline_produces_pdf():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_render_full_pipeline_produces_pdf(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     result = await renderer.render(_job(source='#text("Hello " + data.name)', data={"name": "World"}))
     assert result.content_type == "application/pdf"
     assert result.bytes.startswith(b"%PDF")
@@ -960,8 +828,8 @@ async def test_render_full_pipeline_produces_pdf():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_preserves_hashes_in_data_strings():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_render_preserves_hashes_in_data_strings(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     source = '#assert(data.comment == "# a comment")\n#text(data.comment)'
 
     result = await renderer.render(_job(source=source, data={"comment": "# a comment"}))
@@ -971,9 +839,9 @@ async def test_render_preserves_hashes_in_data_strings():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_with_auxiliary_text_and_binary_files():
+async def test_render_with_auxiliary_text_and_binary_files(make_renderer: Callable[..., TypstRenderer]):
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+    renderer = make_renderer(cli_path=Path("typst"))
     files = {
         "lib/greeting.typ": RenderFile(encoding="text", content="#let greet(name) = [Hello, #name!]"),
         "assets/logo.png": RenderFile(encoding="base64", content=png),
@@ -985,8 +853,8 @@ async def test_render_with_auxiliary_text_and_binary_files():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_uses_a_nested_request_supplied_font():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_render_uses_a_nested_request_supplied_font(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     font_bytes = (Path(__file__).parent / "fixtures" / "fonts" / "Tiny5-Regular.ttf").read_bytes()
     files = {
         "fonts/custom/Tiny5-Regular.ttf": RenderFile(
@@ -1006,14 +874,12 @@ async def test_render_uses_a_nested_request_supplied_font():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_uses_a_configured_font_directory():
+async def test_render_uses_a_configured_font_directory(make_renderer: Callable[..., TypstRenderer]):
     font_path = (Path(__file__).parent / "fixtures" / "fonts").resolve()
     source = '#set text(font: "Tiny5", size: 24pt)\nMounted font'
 
-    fallback = await TypstRenderer(Settings(cli_path=Path("typst"))).render(
-        _job(source=source, output_format=OutputFormat.svg)
-    )
-    mounted = await TypstRenderer(Settings(cli_path=Path("typst"), font_path=font_path)).render(
+    fallback = await make_renderer(cli_path=Path("typst")).render(_job(source=source, output_format=OutputFormat.svg))
+    mounted = await make_renderer(cli_path=Path("typst"), font_path=font_path).render(
         _job(source=source, output_format=OutputFormat.svg)
     )
 
@@ -1023,9 +889,9 @@ async def test_render_uses_a_configured_font_directory():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_imports_a_configured_local_package():
+async def test_render_imports_a_configured_local_package(make_renderer: Callable[..., TypstRenderer]):
     package_path = (Path(__file__).parent / "fixtures" / "packages").resolve()
-    renderer = TypstRenderer(Settings(cli_path=Path("typst"), local_package_path=package_path))
+    renderer = make_renderer(cli_path=Path("typst"), local_package_path=package_path)
     source = '#import "@local/prelum-test:1.0.0": package-message\n#package-message("hello")'
 
     result = await renderer.render(_job(source=source))
@@ -1035,8 +901,10 @@ async def test_render_imports_a_configured_local_package():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_image_archive_enforces_the_configured_file_limit_with_real_typst():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst"), max_output_files=2))
+async def test_image_archive_enforces_the_configured_file_limit_with_real_typst(
+    make_renderer: Callable[..., TypstRenderer],
+):
+    renderer = make_renderer(cli_path=Path("typst"), max_output_files=2)
     source = '#text("first")\n#pagebreak()\n#text("second")\n#pagebreak()\n#text("third")'
 
     with pytest.raises(TooManyOutputFilesError):
@@ -1045,28 +913,14 @@ async def test_image_archive_enforces_the_configured_file_limit_with_real_typst(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_run_typst_blocks_remote_and_local_packages():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_run_typst_blocks_remote_and_local_packages(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     for source in (
         '#import "@preview/tidy:0.4.0"\n#text("hi")',
         '#import "@local/anything:1.0.0"\n#text("hi")',
     ):
         with pytest.raises(InlineTemplateError):
             await renderer.render(_job(source=source))
-
-
-@pytest.mark.asyncio
-async def test_too_many_files_entries_reports_count_and_limit(make_renderer: Callable[..., TypstRenderer]):
-    renderer = make_renderer(max_inline_files=1)
-    files = {
-        "a.typ": RenderFile(encoding="text", content="a"),
-        "b.typ": RenderFile(encoding="text", content="b"),
-    }
-    with pytest.raises(InvalidFileDataError) as exc_info:
-        await renderer.render(_job(files=files))
-    # The configured limit is the lower of the two, so this is the path a caller branching on
-    # context.rule actually reaches; the structural cap in templates.py is never hit by default.
-    assert exc_info.value.context == {"count": 2, "limit": 1, "rule": "too_many_keys"}
 
 
 @pytest.mark.asyncio
@@ -1095,23 +949,17 @@ async def test_unencodable_file_reports_the_key_and_unencodable_source_reports_n
 @pytest.mark.asyncio
 @pytest.mark.parametrize("signal_number", [signal.SIGSEGV, signal.SIGBUS, signal.SIGILL])
 async def test_run_typst_classifies_a_crashing_signal_as_infrastructure(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
     signal_number: signal.Signals,
 ):
     """Typst dying on SIGSEGV is Typst failing, not the caller's source being wrong."""
     renderer = make_renderer()
+    _ = fake_typst(proc=FakeProc(returncode=-signal_number), content=None)
 
-    class CrashedProc(FakeProc):
-        returncode = -signal_number
-
-    async def fake_run(*_args, **_kwargs):
-        return CrashedProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(RenderError) as exc_info:
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
     assert exc_info.value.is_server_fault
 
 
@@ -1120,6 +968,7 @@ _BOUNDED = 512 * 1024 * 1024
 
 async def _run_under_signal(
     monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
     limit: int | None,
@@ -1128,15 +977,9 @@ async def _run_under_signal(
     if limit is not None:
         _ = _with_prlimit(monkeypatch)
     renderer = make_renderer(max_render_memory_bytes=limit)
+    _ = fake_typst(proc=FakeProc(returncode=-signal_number), content=None)
 
-    class KilledProc(FakeProc):
-        returncode = -signal_number
-
-    async def fake_run(*_args, **_kwargs):
-        return KilledProc()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+    await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
 
 @pytest.mark.asyncio
@@ -1147,6 +990,7 @@ async def _run_under_signal(
 )
 async def test_the_signal_a_render_s_own_memory_bound_produces_is_the_callers_fault(
     monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
     limit: int | None,
@@ -1160,7 +1004,7 @@ async def test_the_signal_a_render_s_own_memory_bound_produces_is_the_callers_fa
     so paging on-call for it would hand every caller a lever on the alert channel.
     """
     with pytest.raises(InlineTemplateError) as exc_info:
-        await _run_under_signal(monkeypatch, tmp_path, make_renderer, limit, signal_number)
+        await _run_under_signal(monkeypatch, fake_typst, tmp_path, make_renderer, limit, signal_number)
     assert not exc_info.value.is_server_fault
 
 
@@ -1172,6 +1016,7 @@ async def test_the_signal_a_render_s_own_memory_bound_produces_is_the_callers_fa
 )
 async def test_a_signal_the_bound_does_not_explain_is_infrastructure(
     monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
     limit: int | None,
@@ -1185,7 +1030,7 @@ async def test_a_signal_the_bound_does_not_explain_is_infrastructure(
     infrastructure fault that must stay visible. Unbounded, SIGABRT is Typst aborting on its own.
     """
     with pytest.raises(RenderError) as exc_info:
-        await _run_under_signal(monkeypatch, tmp_path, make_renderer, limit, signal_number)
+        await _run_under_signal(monkeypatch, fake_typst, tmp_path, make_renderer, limit, signal_number)
     assert exc_info.value.is_server_fault
 
 
@@ -1206,7 +1051,7 @@ def test_resource_limit_args_are_empty_when_no_limit_is_configured(
     make_renderer: Callable[..., TypstRenderer],
 ):
     """The wrapper is Linux-only, so it stays off until a deployment asks for it."""
-    assert make_renderer()._resource_limit_args() == ()
+    assert resource_limit_args(make_renderer().settings) == ()
 
 
 def test_resource_limit_args_attach_the_value_to_its_flag(
@@ -1223,56 +1068,43 @@ def test_resource_limit_args_attach_the_value_to_its_flag(
     wrapper = _with_prlimit(monkeypatch)
     renderer = make_renderer(max_render_memory_bytes=256 * 1024 * 1024)
 
-    assert renderer._resource_limit_args() == (wrapper, "--data=268435456", "--")
+    assert resource_limit_args(renderer.settings) == (wrapper, "--data=268435456", "--")
 
 
 @pytest.mark.asyncio
 async def test_run_typst_prefixes_the_wrapper_without_disturbing_the_argv_tail(
     monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     """Template and output are addressed from the end of argv, so a prefix must not move them."""
     wrapper = _with_prlimit(monkeypatch)
     renderer = make_renderer(max_render_memory_bytes=256 * 1024 * 1024)
-    captured: dict[str, object] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        captured["args"] = args
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
+    plan = _plan(tmp_path)
+    await renderer._run_typst(_layout(tmp_path), plan)
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    output_path = tmp_path / "out.pdf"
-    await renderer._run_typst(_layout(tmp_path), output_path)
-
-    args = cast(tuple[str, ...], captured["args"])
-    assert args[:3] == (wrapper, "--data=268435456", "--")
-    assert args[3] == str(renderer.settings.cli_path)
-    assert args[_TYPST_ARG_OUTPUT] == str(output_path)
-    assert args[_TYPST_ARG_TEMPLATE] == str(_layout(tmp_path).bound_template)
+    assert typst.call.argv[:3] == (wrapper, "--data=268435456", "--")
+    assert typst.call.argv[3] == str(renderer.settings.cli_path)
+    assert typst.call.output == plan.typst_output
+    assert typst.call.template == _layout(tmp_path).bound_template
 
 
 @pytest.mark.asyncio
 async def test_run_typst_invokes_typst_directly_when_no_limit_is_configured(
-    monkeypatch: pytest.MonkeyPatch,
+    fake_typst: Callable[..., FakeTypst],
     tmp_path: Path,
     make_renderer: Callable[..., TypstRenderer],
 ):
     """Without this the default-off promise is untested: argv would grow a wrapper unnoticed."""
     renderer = make_renderer()
-    captured: dict[str, object] = {}
+    typst = fake_typst()
 
-    async def fake_run(*args, **_kwargs):
-        captured["args"] = args
-        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
-        return FakeProc()
+    await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
-
-    args = cast(tuple[str, ...], captured["args"])
-    assert args[0] == str(renderer.settings.cli_path)
+    assert typst.call.argv[0] == str(renderer.settings.cli_path)
 
 
 # The limit these two share. High enough that a legitimate document renders — a 300-section A4
@@ -1284,14 +1116,14 @@ _INTEGRATION_MEMORY_LIMIT = 256 * 1024 * 1024
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "linux", reason="prlimit is a Linux wrapper")
 @pytest.mark.asyncio
-async def test_a_bounded_render_still_compiles_with_real_typst():
+async def test_a_bounded_render_still_compiles_with_real_typst(make_renderer: Callable[..., TypstRenderer]):
     """
     The control half of the pair, and the half that catches a wrapper that silently does nothing.
 
     A split "--data N", a missing "--" or a limit set too low all make the negative test below pass
     for the wrong reason. Only a successful render proves the wrapper was assembled correctly.
     """
-    renderer = TypstRenderer(Settings(cli_path=Path("typst"), max_render_memory_bytes=_INTEGRATION_MEMORY_LIMIT))
+    renderer = make_renderer(cli_path=Path("typst"), max_render_memory_bytes=_INTEGRATION_MEMORY_LIMIT)
 
     result = await renderer.render(_job(source='#text("hello")'))
 

@@ -26,16 +26,17 @@ from app.core.metrics import (
     render_duration_seconds,
     render_errors_total,
     render_queue_waiting,
-    render_timeouts_total,
     render_total,
 )
 from app.deps import get_render_semaphore, get_renderer, get_settings
 from app.models import ConstraintsResponse, Problem, RenderJob, RenderRequest
 from app.render.renderer import TypstRenderer
+from app.render.templates import effective_key_limit, ensure_key_count_fits
 
 router = APIRouter()
 logger: FilteringBoundLogger = cast(FilteringBoundLogger, structlog.get_logger())
 api_token_header = APIKeyHeader(name=API_TOKEN_HEADER, scheme_name="PrelumApiToken", auto_error=False)
+
 
 def _inline_local_defs(schema: dict[str, Any]) -> dict[str, Any]:
     """
@@ -153,7 +154,7 @@ async def constraints(
     taken and no subprocess runs, so it cannot be shed and cannot fail on caller input.
 
     """
-    return ConstraintsResponse.model_validate(build_constraints(settings))
+    return build_constraints(settings)
 
 
 @router.post("/v1/render", response_class=Response, responses=_RENDER_RESPONSES)
@@ -175,12 +176,21 @@ async def render(
     :raises ServiceUnavailableError: For unexpected or unhandled errors during rendering.
     :raises asyncio.CancelledError: If the client disconnects or the request is cancelled.
     """
+    # Before the permit, and before any metric bookkeeping: the configured cap is the lower of the
+    # two a caller is promised, and enforcing it in the renderer meant an over-limit request spent a
+    # render slot to be refused. The model layer applies the structural cap, which is deployment-
+    # independent and all it can know; this is the deployment's own policy.
+    ensure_key_count_fits(len(request.files), limit=effective_key_limit(settings.max_inline_files))
+
     job = RenderJob(source=request.source, files=request.files, data=request.data, output=request.output)
     output_format = job.output.format.value
 
-    # Track queue waiting
     render_queue_waiting.inc()
     waiting = True
+    # Settled by whichever arm below runs, and reported once in the finally. "error" is the default
+    # so a BaseException the arms do not name is still counted rather than silently lost.
+    outcome = "error"
+    error_type: str | None = None
 
     try:
         # Bounded rather than `async with semaphore`: an unbounded wait turns an overload into
@@ -209,45 +219,30 @@ async def render(
             render_duration_seconds.labels(
                 output_format=output_format,
             ).observe(render_time)
+        outcome = "success"
     except asyncio.CancelledError:  # pragma: no cover - safety
         if waiting:
             render_queue_waiting.dec()
-        render_total.labels(
-            output_format=output_format,
-            status="cancelled",
-        ).inc()
+        # No error_type: a client that hung up is not a render that failed.
+        outcome = "cancelled"
         raise
-    except RenderTimeoutError:
-        render_timeouts_total.inc()
-        render_errors_total.labels(error_type="timeout").inc()
-        render_total.labels(
-            output_format=output_format,
-            status="timeout",
-        ).inc()
+    except RenderTimeoutError as exc:
+        outcome, error_type = "timeout", exc.code
         raise
     except AppError as exc:
-        render_errors_total.labels(error_type=type(exc).__name__).inc()
-        render_total.labels(
-            output_format=output_format,
-            status="error",
-        ).inc()
+        outcome, error_type = "error", exc.code
         raise
     except Exception as exc:
         logger.exception("render.unhandled_error", error=str(exc))
-        render_errors_total.labels(error_type="unhandled").inc()
-        render_total.labels(
-            output_format=output_format,
-            status="error",
-        ).inc()
+        outcome, error_type = "error", "unhandled"
         raise ServiceUnavailableError("Render failed") from exc
+    finally:
+        # Emitted once, here, rather than in each arm above: the two counters have to agree on every
+        # outcome, and five copies of them had already drifted into three label vocabularies.
+        render_total.labels(output_format=output_format, status=outcome).inc()
+        if error_type is not None:
+            render_errors_total.labels(error_type=error_type).inc()
 
-    # Track successful render
-    render_total.labels(
-        output_format=output_format,
-        status="success",
-    ).inc()
-
-    # Track output size
     output_size_bytes.labels(
         output_format=output_format,
     ).observe(len(result.bytes))

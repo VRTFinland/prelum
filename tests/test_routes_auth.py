@@ -1,79 +1,65 @@
 import json
-from unittest.mock import AsyncMock, patch
+from collections.abc import Callable
 
 import httpx2 as httpx
-import pytest
 from fastapi.testclient import TestClient
 
-from app import deps
+from app.core.constants import API_TOKEN_HEADER
 from app.core.errors import InlineTemplateError
 from app.core.output_rules import output_rules as published_output_rules
-from app.main import app, create_app
-from app.render.renderer import RenderResult, TypstRenderer
+from app.main import app
+from app.render.renderer import RenderResult
 from app.render.templates import MAX_INLINE_FILE_KEYS
+from tests.conftest import TOKEN, client, patched_render
 
-client = TestClient(app)
-TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
 SOURCE = '#text("hi")'
 
 
-def _result() -> RenderResult:
-    return RenderResult(bytes=b"%PDF-1.4 fake", content_type="application/pdf", filename="test.pdf")
+def test_body_limit_checks_actual_bytes(configured_client: Callable[..., TestClient]):
+    limited_client = configured_client(max_request_body_bytes="1024")
+
+    response = limited_client.post(
+        "/v1/render",
+        json={"source": SOURCE, "data": "x" * 2048},
+        headers={**TOKEN, "Content-Length": "5"},
+    )
+
+    assert response.status_code == 413
+    assert response.headers["content-type"].startswith("application/problem+json")
+    assert response.json()["code"] == "request_too_large"
+    # The header is the caller's own declaration; Prelum measured nothing it can report.
+    assert response.json()["context"] == {"limit": 1024, "declared_size": 5}
 
 
-def test_body_limit_checks_actual_bytes(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PRELUM_MAX_REQUEST_BODY_BYTES", "1024")
-    deps.get_settings.cache_clear()
-    try:
-        limited_client = TestClient(create_app())
-        response = limited_client.post(
-            "/v1/render",
-            json={"source": SOURCE, "data": "x" * 2048},
-            headers={**TOKEN, "Content-Length": "5"},
-        )
-        assert response.status_code == 413
-        assert response.headers["content-type"].startswith("application/problem+json")
-        assert response.json()["code"] == "request_too_large"
-        # The header is the caller's own declaration; Prelum measured nothing it can report.
-        assert response.json()["context"] == {"limit": 1024, "declared_size": 5}
-    finally:
-        deps.get_settings.cache_clear()
+def test_body_limit_reports_only_the_limit_without_content_length(configured_client: Callable[..., TestClient]):
+    limited_client = configured_client(max_request_body_bytes="1024")
+    body = json.dumps({"source": SOURCE, "data": "x" * 2048}).encode()
+
+    # An iterable body is sent chunked, so no Content-Length header exists to declare a size.
+    response = limited_client.post(
+        "/v1/render",
+        content=iter([body]),
+        headers={**TOKEN, "Content-Type": "application/json"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["code"] == "request_too_large"
+    assert response.json()["context"] == {"limit": 1024}
 
 
-def test_body_limit_reports_only_the_limit_without_content_length(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PRELUM_MAX_REQUEST_BODY_BYTES", "1024")
-    deps.get_settings.cache_clear()
-    try:
-        limited_client = TestClient(create_app())
-        body = json.dumps({"source": SOURCE, "data": "x" * 2048}).encode()
-        # An iterable body is sent chunked, so no Content-Length header exists to declare a size.
-        response = limited_client.post(
-            "/v1/render",
-            content=iter([body]),
-            headers={**TOKEN, "Content-Type": "application/json"},
-        )
-        assert response.status_code == 413
-        assert response.json()["code"] == "request_too_large"
-        assert response.json()["context"] == {"limit": 1024}
-    finally:
-        deps.get_settings.cache_clear()
+def test_body_limit_does_not_fail_on_an_unconvertibly_long_content_length(
+    configured_client: Callable[..., TestClient],
+):
+    limited_client = configured_client(max_request_body_bytes="1024")
 
+    response = limited_client.post(
+        "/v1/render",
+        json={"source": SOURCE, "data": "x" * 2048},
+        headers={**TOKEN, "Content-Length": "9" * 5000},
+    )
 
-def test_body_limit_does_not_fail_on_an_unconvertibly_long_content_length(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PRELUM_MAX_REQUEST_BODY_BYTES", "1024")
-    deps.get_settings.cache_clear()
-    try:
-        limited_client = TestClient(create_app())
-        response = limited_client.post(
-            "/v1/render",
-            json={"source": SOURCE, "data": "x" * 2048},
-            headers={**TOKEN, "Content-Length": "9" * 5000},
-        )
-
-        assert response.status_code == 413
-        assert response.json()["context"] == {"limit": 1024}
-    finally:
-        deps.get_settings.cache_clear()
+    assert response.status_code == 413
+    assert response.json()["context"] == {"limit": 1024}
 
 
 def test_health_endpoint():
@@ -92,8 +78,8 @@ def test_legacy_render_endpoint_does_not_exist():
     assert client.post("/render", json={"source": SOURCE}, headers=TOKEN).status_code == 404
 
 
-def test_render_response_headers():
-    with patch.object(TypstRenderer, "render", new=AsyncMock(return_value=_result())):
+def test_render_response_headers(fake_render_result: RenderResult):
+    with patched_render(fake_render_result):
         response = client.post("/v1/render", json={"source": SOURCE}, headers=TOKEN)
 
     assert response.status_code == 200
@@ -109,7 +95,7 @@ def test_render_uses_the_result_disposition_for_an_archive():
         filename="pages.zip",
         disposition="attachment",
     )
-    with patch.object(TypstRenderer, "render", new=AsyncMock(return_value=result)):
+    with patched_render(result):
         response = client.post(
             "/v1/render",
             json={"source": SOURCE, "output": {"format": "svg", "archive": "zip"}},
@@ -122,18 +108,14 @@ def test_render_uses_the_result_disposition_for_an_archive():
 
 
 def test_render_semaphore_releases_on_error():
-    with patch.object(
-        TypstRenderer,
-        "render",
-        new=AsyncMock(side_effect=InlineTemplateError("Template rendering failed")),
-    ):
+    with patched_render(InlineTemplateError("Template rendering failed")):
         for index in range(3):
             response = client.post("/v1/render", json={"source": "#broken("}, headers=TOKEN)
             assert response.status_code == 422, f"Request {index + 1} failed with {response.status_code}"
 
 
 def test_render_rejects_a_non_ascii_token_with_403_not_a_5xx():
-    headers = httpx.Headers([(b"X-Prelum-Api-Token", "tökén-ñ".encode())])
+    headers = httpx.Headers([(API_TOKEN_HEADER.encode(), "tökén-ñ".encode())])
     response = client.post("/v1/render", json={"source": SOURCE}, headers=headers)
     assert response.status_code == 403
     assert response.json()["title"] == "Forbidden"
@@ -161,11 +143,7 @@ def test_render_validation_error_does_not_echo_the_request_body():
 
 
 def test_render_inline_compile_failure_returns_422_problem():
-    with patch.object(
-        TypstRenderer,
-        "render",
-        new=AsyncMock(side_effect=InlineTemplateError("Template rendering failed")),
-    ):
+    with patched_render(InlineTemplateError("Template rendering failed")):
         response = client.post("/v1/render", json={"source": "#broken("}, headers=TOKEN)
 
     assert response.status_code == 422
@@ -216,7 +194,7 @@ def test_constraints_publishes_the_output_rules_under_their_own_version():
     document = client.get("/v1/constraints", headers=TOKEN).json()
 
     output_rules = document["output_rules"]
-    assert output_rules == published_output_rules()
+    assert output_rules == published_output_rules().published()
     assert "rules_version" not in output_rules
     assert output_rules["output_rules_version"] >= 1
     # The tables a mirror cannot derive, and the grammar behind `pages`.
@@ -228,29 +206,64 @@ def test_constraints_publishes_the_output_rules_under_their_own_version():
     assert set(accepted) == {"output", "accepted"}
 
 
-def test_constraints_reflects_the_deployment_rather_than_the_defaults(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PRELUM_MAX_INLINE_FILES", "7")
-    deps.get_settings.cache_clear()
-    try:
-        limited_client = TestClient(create_app())
-        document = limited_client.get("/v1/constraints", headers=TOKEN).json()
+def test_a_files_mapping_over_the_configured_cap_is_refused_before_a_render_slot(
+    configured_client: Callable[..., TestClient],
+    fake_render_result: RenderResult,
+):
+    """
+    The configured cap is the lower of the two a caller is promised, so this is the path it meets.
 
-        assert document["limits"]["max_inline_files"] == 7
-        assert document["limits"]["effective_max_files"] == 7
-        assert document["max_keys"] == MAX_INLINE_FILE_KEYS
-    finally:
-        deps.get_settings.cache_clear()
+    Enforced at the route rather than in the renderer, which is why this is an HTTP test: an
+    over-limit request used to acquire a render permit and build a temporary project before being
+    refused. A permit spent on a request that cannot be served is capacity taken from one that can.
+    """
+    limited_client = configured_client(max_inline_files="1")
+    files = {name: {"encoding": "text", "content": "x"} for name in ("a.typ", "b.typ")}
+
+    with patched_render(fake_render_result) as render:
+        response = limited_client.post("/v1/render", json={"source": SOURCE, "files": files}, headers=TOKEN)
+
+    # The claim in the name: refused before anything a render slot would have been taken for.
+    render.assert_not_awaited()
+    assert response.status_code == 400
+    problem = response.json()
+    assert problem["code"] == "invalid_file_data"
+    # The number here and the one published as limits.effective_max_files come from one expression,
+    # so a caller that mirrors the published value is never refused by a different one.
+    assert problem["context"] == {"count": 2, "limit": 1, "rule": "too_many_keys"}
+    assert limited_client.get("/v1/constraints", headers=TOKEN).json()["limits"]["effective_max_files"] == 1
 
 
-def test_constraints_never_discloses_filesystem_paths(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setenv("PRELUM_CLI_PATH", "/usr/local/hidden/typst")
-    deps.get_settings.cache_clear()
-    try:
-        disclosing_client = TestClient(create_app())
+def test_a_files_mapping_within_the_configured_cap_still_reaches_the_renderer(
+    configured_client: Callable[..., TestClient],
+    fake_render_result: RenderResult,
+):
+    """The other half of the pair: the cap must not refuse a request that fits under it."""
+    limited_client = configured_client(max_inline_files="2")
+    files = {name: {"encoding": "text", "content": "x"} for name in ("a.typ", "b.typ")}
 
-        assert "hidden" not in disclosing_client.get("/v1/constraints", headers=TOKEN).text
-    finally:
-        deps.get_settings.cache_clear()
+    with patched_render(fake_render_result):
+        response = limited_client.post("/v1/render", json={"source": SOURCE, "files": files}, headers=TOKEN)
+
+    assert response.status_code == 200
+
+
+def test_constraints_reflects_the_deployment_rather_than_the_defaults(
+    configured_client: Callable[..., TestClient],
+):
+    limited_client = configured_client(max_inline_files="7")
+
+    document = limited_client.get("/v1/constraints", headers=TOKEN).json()
+
+    assert document["limits"]["max_inline_files"] == 7
+    assert document["limits"]["effective_max_files"] == 7
+    assert document["max_keys"] == MAX_INLINE_FILE_KEYS
+
+
+def test_constraints_never_discloses_filesystem_paths(configured_client: Callable[..., TestClient]):
+    disclosing_client = configured_client(cli_path="/usr/local/hidden/typst")
+
+    assert "hidden" not in disclosing_client.get("/v1/constraints", headers=TOKEN).text
 
 
 def test_constraints_appears_in_the_openapi_schema():

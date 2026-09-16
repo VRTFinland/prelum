@@ -1,10 +1,9 @@
-import json
 from pathlib import Path
 
 from app.core.output_rules import output_rules
+from scripts._artefacts import API_DOCS, write_json_artefact
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DESTINATION = ROOT / "docs" / "api" / "output-rules.json"
+DEFAULT_DESTINATION = API_DOCS / "output-rules.json"
 
 
 def export_output_rules(destination: Path = DEFAULT_DESTINATION) -> None:
@@ -15,9 +14,7 @@ def export_output_rules(destination: Path = DEFAULT_DESTINATION) -> None:
     withhold: a caller needs nothing from a running deployment to validate an `output` object, and
     the vectors are what lets it prove its validator agrees with ours rather than transcribing it.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    document = json.dumps(output_rules(), indent=2, sort_keys=True)
-    _ = destination.write_text(f"{document}\n", encoding="utf-8")
+    write_json_artefact(output_rules().published(), destination)
 
 
 if __name__ == "__main__":

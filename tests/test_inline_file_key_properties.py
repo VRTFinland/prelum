@@ -353,17 +353,25 @@ def test_a_key_at_the_length_limit_is_actually_written():
         assert (project_root / key).read_bytes() == b"content"
 
 
+# Both derived from the published document once at import rather than per example. The document is
+# immutable, so rebuilding it for each of the 7,000 cases these two properties run bought nothing —
+# it is cheap enough not to show in the runtime, which Hypothesis itself dominates, so this is for
+# clarity rather than speed. The mirror below still reads nothing but published data fields.
+_PUBLISHED_RULES: dict[str, Any] = files_key_rules().published()
+_PUBLISHED_SEGMENT_CHARACTER = re.compile(_PUBLISHED_RULES["segment_character_class"])
+
+
 # A consumer that cannot compile key_pattern at all — Go's regexp and Rust's regex are RE2 and have
 # no lookahead — has only the published data. This is that consumer, written from the data fields
 # alone: if a rule the validator enforces is missing here, the document does not contain it either.
-def _accepted_by_published_data(key: str, rules: dict[str, Any]) -> bool:
-    character_class = re.compile(rules["segment_character_class"])
+def _accepted_by_published_data(key: str) -> bool:
+    rules = _PUBLISHED_RULES
     if not (rules["min_key_length"] <= len(key) <= rules["max_key_length"]):
         return False
     for segment in key.split("/"):
         if not (rules["min_segment_length"] <= len(segment) <= rules["max_segment_length"]):
             return False
-        if not all(character_class.match(character) for character in segment):
+        if not all(_PUBLISHED_SEGMENT_CHARACTER.match(character) for character in segment):
             return False
         if rules["segments_may_not_be_only_dots"] and segment and all(c == "." for c in segment):
             return False
@@ -374,13 +382,13 @@ def _accepted_by_published_data(key: str, rules: dict[str, Any]) -> bool:
 @given(keys)
 def test_the_published_data_alone_accepts_exactly_what_the_validator_accepts(key: str):
     """The expression is a fast path, so the data has to carry every rule on its own."""
-    assert _accepted_by_published_data(key, files_key_rules()) == _accepted_by_validator(key)
+    assert _accepted_by_published_data(key) == _accepted_by_validator(key)
 
 
 @settings(max_examples=5000)
 @given(st.text(alphabet=_WIDE_ALPHABET, min_size=0, max_size=12))
 def test_the_published_data_alone_matches_the_validator_outside_the_segment_pool(key: str):
-    assert _accepted_by_published_data(key, files_key_rules()) == _accepted_by_validator(key)
+    assert _accepted_by_published_data(key) == _accepted_by_validator(key)
 
 
 def test_the_reserve_is_measured_against_the_longer_of_the_two_spellings(tmp_path: Path):

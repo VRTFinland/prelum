@@ -15,7 +15,7 @@ IMAGE := $(if ${REGISTRY},${REGISTRY}/,)${IMAGE_NAME}:${DOCKER_TAG}
 LATEST_IMAGE := $(if ${REGISTRY},${REGISTRY}/,)${IMAGE_NAME}:latest
 DOCS_PORT ?= 9876
 
-.PHONY: version build buildx-build-publish push run serve test test-all test-integration test-docker lint lint-fix format type-check checks regenerate-examples docs-examples docs-openapi docs-constraints docs-error-codes docs-output-rules docs-build docs-serve
+.PHONY: version build buildx-build-publish push run serve test test-all test-integration test-docker lint lint-fix format format-check type-check checks regenerate-examples docs-examples docs-openapi docs-constraints docs-error-codes docs-output-rules docs-build docs-serve
 
 # Print the tag the next build would use, e.g. for CI or `docker run`.
 version:
@@ -75,19 +75,26 @@ format:
 	@echo "Running ruff formatter..."
 	@uv run ruff format .
 
+# The read-only half of `format`, for `checks` and CI. Without it the formatter is advisory: a file
+# drifts out of shape as soon as someone edits it without running `make format`, and the next agent
+# or contributor who does run it produces a diff of unrelated reformatting alongside their change.
+format-check:
+	@echo "Checking formatting..."
+	@uv run ruff format --check .
+
 # Type checking
 type-check:
 	@echo "Running ty type checker..."
 	@uv run ty check app scripts
 
 # Run all checks
-checks: lint type-check
+checks: lint format-check type-check
 	@echo "All checks passed!"
 
 # Regenerate the example request body from examples/hello.typ and examples/lib/label.typ
 regenerate-examples:
 	@echo "Regenerating examples/render-request.json from the .typ files..."
-	@uv run python scripts/regenerate-example-request.py
+	@uv run python -m scripts.regenerate_example_request
 
 # Render the published example artefacts. The manual is built from the documentation itself, so
 # it can only be correct when it is produced by the same build that produces the site.

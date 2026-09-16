@@ -7,7 +7,7 @@ request rather than a template library the service resolves by name.
   auxiliary file.
 - `lib/label.typ` — that auxiliary file; the key in `files` is the path the source imports.
 - `render-request.json` — the two of them assembled into a request body. It is generated from the
-  two `.typ` files by `uv run python scripts/regenerate-example-request.py`;
+  two `.typ` files by `make regenerate-examples`;
   `tests/test_examples.py` fails if they drift.
 
 The three directories beside them are the templates published on the

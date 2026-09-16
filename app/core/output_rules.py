@@ -28,10 +28,17 @@ from app.models import (
     PDF_OUTPUT_FORMATS,
     TAGGED_PDF_STANDARDS,
     ArchiveFormat,
+    ImageOutputRules,
+    OutputConformanceVector,
     OutputFormat,
+    OutputRule,
     OutputRuleId,
+    OutputRulesDocument,
+    PageSelectionRules,
+    PdfOutputRules,
     PdfStandard,
     PdfVersion,
+    PngOutputRules,
 )
 
 # Rises whenever any published output rule changes. Separate from the files-key RULES_VERSION on
@@ -260,6 +267,64 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "code": "invalid_request",
         "rule": OutputRuleId.page_range_end_precedes_start.value,
     },
+    # Each of these breaks two adjacent rules at once, so the id it reports is what makes
+    # `rule_evaluation` — "the first to fail is the one reported" — a checked claim rather than
+    # prose. The order itself lives in the statement sequence of parse_page_selection and
+    # validate_pdf_options, where reordering two _reject calls while adding a rule is a natural
+    # thing to do; without these, a mirror built from this document would then report a different
+    # id from the service for the same object, and nothing would fail.
+    #
+    # These seven are every adjacent pair an `output` object can break together, including the one
+    # that spans the two validators: `pages` is validated on the field, so the page-selection rules
+    # all run before validate_pdf_options and the boundary between the two groups is observable.
+    # The rest carry no claim to check because no request reaches them: duplicate_standards with
+    # multiple_pdf_a_standards, and multiple_pdf_a_standards with ua_1_with_pdf_a_4, each need a
+    # third standard that max_standards refuses at the field level first; and pages_requires_archive
+    # needs `archive` absent where page_with_archive needs it present. The image rules govern a
+    # different format from the PDF ones, so their relative order is not an order at all.
+    {
+        "output": {"format": "pdf", "pages": ",".join(["100"] * 65)},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_too_long.value,
+    },
+    {
+        "output": {"format": "pdf", "pages": ",".join(["1"] * 64 + ["x"])},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_too_many_segments.value,
+    },
+    {
+        "output": {"format": "pdf", "pages": "3-2,x"},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_malformed.value,
+    },
+    {
+        "output": {"format": "pdf", "version": "1.7", "standards": ["ua-1", "a-4"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.ua_1_with_pdf_a_4.value,
+    },
+    {
+        "output": {"format": "pdf", "version": "2.0", "standards": ["ua-1", "a-2b"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.version_conflicts_with_standard.value,
+    },
+    {
+        "output": {"format": "pdf", "version": "2.0", "standards": ["ua-1"], "pages": "1"},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.ua_1_with_pdf_2_0.value,
+    },
+    # The boundary between the two groups: a reversed range and a duplicated standard together.
+    {
+        "output": {"format": "pdf", "pages": "3-2", "standards": ["a-2b", "a-2b"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_range_end_precedes_start.value,
+    },
     # Field-level rules from here on: the schema states each one, and the rejection carries no rule
     # id because Pydantic's own error type already tells them apart.
     {"output": {"format": "tiff"}, "accepted": False, "code": "unsupported_format"},
@@ -281,54 +346,60 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
 ]
 
 
-def output_rules() -> dict[str, Any]:
+# Validated into their models once at import rather than per call. The tables above stay literal
+# data — that is the form a reader and a mirror both want — and a wrong key or type in one fails the
+# import for every deployment and every test run, instead of on the first request that serves it.
+_RULE_MODELS = [OutputRule.model_validate(rule) for rule in RULES]
+_VECTOR_MODELS = [OutputConformanceVector.model_validate(vector) for vector in CONFORMANCE_VECTORS]
+
+
+def output_rules() -> OutputRulesDocument:
     """Build the published output-option document, served and exported unchanged."""
-    return {
-        "output_rules_version": OUTPUT_RULES_VERSION,
-        "formats": [output_format.value for output_format in OutputFormat],
-        "pdf": {
+    return OutputRulesDocument(
+        output_rules_version=OUTPUT_RULES_VERSION,
+        formats=[output_format.value for output_format in OutputFormat],
+        pdf=PdfOutputRules(
             # Which formats each block governs, so that a mirror decides by reading rather than by
             # excluding — the same reason pdf_a_4_standards is published one level down.
-            "formats": sorted(output_format.value for output_format in PDF_OUTPUT_FORMATS),
-            "versions": [version.value for version in PdfVersion],
-            "standards": [standard.value for standard in PdfStandard],
-            "max_standards": MAX_PDF_STANDARDS,
+            formats=sorted(output_format.value for output_format in PDF_OUTPUT_FORMATS),
+            versions=[version.value for version in PdfVersion],
+            standards=[standard.value for standard in PdfStandard],
+            max_standards=MAX_PDF_STANDARDS,
             # The two tables a mirror cannot derive and would otherwise transcribe. pdf_a_version
             # also names the PDF/A profiles: a standard absent from it is not one, which is how
             # multiple_pdf_a_standards counts and how ua-1 is the one that may accompany a profile.
-            "pdf_a_version": {standard.value: version.value for standard, version in PDF_A_VERSION.items()},
-            "tagged_standards": sorted(standard.value for standard in TAGGED_PDF_STANDARDS),
+            pdf_a_version={standard.value: version.value for standard, version in PDF_A_VERSION.items()},
+            tagged_standards=sorted(standard.value for standard in TAGGED_PDF_STANDARDS),
             # Published rather than left to prose so ua_1_with_pdf_a_4 can be applied from data: a
             # mirror inferring the family from the "a-4" prefix is parsing names, not reading rules.
-            "pdf_a_4_standards": sorted(standard.value for standard in PDF_A_4_STANDARDS),
-        },
-        "image": {
-            "formats": sorted(output_format.value for output_format in IMAGE_OUTPUT_FORMATS),
-            "archives": list(get_args(ArchiveFormat.__value__)),
-            "min_page": MIN_IMAGE_PAGE,
-            "png": {"min_ppi": MIN_PNG_PPI, "max_ppi": MAX_PNG_PPI, "default_ppi": DEFAULT_PNG_PPI},
-        },
+            pdf_a_4_standards=sorted(standard.value for standard in PDF_A_4_STANDARDS),
+        ),
+        image=ImageOutputRules(
+            formats=sorted(output_format.value for output_format in IMAGE_OUTPUT_FORMATS),
+            archives=list(get_args(ArchiveFormat.__value__)),
+            min_page=MIN_IMAGE_PAGE,
+            png=PngOutputRules(min_ppi=MIN_PNG_PPI, max_ppi=MAX_PNG_PPI, default_ppi=DEFAULT_PNG_PPI),
+        ),
         # Shared by pdf.pages and an image archive's pages: one parser answers both, so a mirror
         # needs this grammar whichever format it supports.
-        "page_selection": {
-            "max_length": MAX_PAGE_SELECTION_LENGTH,
+        page_selection=PageSelectionRules(
+            max_length=MAX_PAGE_SELECTION_LENGTH,
             # The unit belongs beside the bound: max_length counts Unicode code points, not bytes,
             # and it is checked before the pattern is applied. A mirror in a language whose string
             # length is a byte count answers page_selection_too_long where the service answers
             # page_selection_malformed — both reject, so only the id reveals the disagreement. The
             # non-ASCII vector below is the one that catches it.
-            "max_length_unit": "unicode code points",
-            "max_selections": MAX_PAGE_SELECTION_SEGMENTS,
-            "selection_pattern": PAGE_SELECTION_PATTERN,
-            "selection_pattern_flavour": "pcre",
+            max_length_unit="unicode code points",
+            max_selections=MAX_PAGE_SELECTION_SEGMENTS,
+            selection_pattern=PAGE_SELECTION_PATTERN,
+            selection_pattern_flavour="pcre",
             # Stated as data because the expression cannot carry it: the pattern is applied to each
             # selection whole, and a mirror anchoring it with '^' and '$' accepts a trailing newline.
-            "selection_pattern_matches_whole_selection": True,
-        },
-        "rule_evaluation": (
-            "rules are listed in the order Prelum applies them; the first to fail is the one "
-            "reported in context.rule"
+            selection_pattern_matches_whole_selection=True,
         ),
-        "rules": RULES,
-        "conformance_vectors": CONFORMANCE_VECTORS,
-    }
+        rule_evaluation=(
+            "rules are listed in the order Prelum applies them; the first to fail is the one reported in context.rule"
+        ),
+        rules=_RULE_MODELS,
+        conformance_vectors=_VECTOR_MODELS,
+    )

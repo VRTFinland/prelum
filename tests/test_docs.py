@@ -11,6 +11,7 @@ from scripts.export_constraints import export_constraints
 from scripts.export_error_codes import export_error_codes
 from scripts.export_openapi import export_openapi
 from scripts.export_output_rules import export_output_rules
+from tests.conftest import PROBLEM_MEMBERS
 
 ROOT = Path(__file__).resolve().parent.parent
 MAKEFILE = ROOT / "Makefile"
@@ -77,15 +78,7 @@ def test_openapi_export_describes_routes_models_and_authentication(tmp_path: Pat
         problem = responses[status]["content"]
         assert set(problem) == {"application/problem+json"}
         problem_schema = problem["application/problem+json"]["schema"]
-        assert set(problem_schema["required"]) == {
-            "code",
-            "origin",
-            "title",
-            "status",
-            "detail",
-            "instance",
-            "context",
-        }
+        assert set(problem_schema["required"]) == PROBLEM_MEMBERS
         assert problem_schema["properties"]["detail"]["type"] == "string"
         assert problem_schema["properties"]["context"]["type"] == "object"
 
@@ -125,7 +118,7 @@ def test_constraints_export_publishes_the_rules_without_deployment_configuration
     export_constraints(destination)
 
     document = json.loads(destination.read_text(encoding="utf-8"))
-    assert document == files_key_rules()
+    assert document == files_key_rules().published()
     assert "limits" not in document, "the static artefact must not imply a deployment's limits"
     assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
 
@@ -137,7 +130,7 @@ def test_output_rules_export_publishes_the_same_document_the_endpoint_nests(tmp_
     export_output_rules(destination)
 
     document = json.loads(destination.read_text(encoding="utf-8"))
-    assert document == output_rules()
+    assert document == output_rules().published()
     assert "limits" not in document, "the output rules are a property of the code, not of a deployment"
     assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
 
@@ -183,9 +176,7 @@ def test_openapi_publishes_the_error_origin_and_its_values(tmp_path: Path):
     # components.schemas as a named "Problem" component. _PROBLEM_SCHEMA is built once in routes.py
     # and reused by reference for every error response on both /v1/render and /v1/constraints, so
     # asserting on one response's schema covers them all.
-    problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"][
-        "schema"
-    ]
+    problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"]["schema"]
     assert "origin" in problem["required"]
     # routes.py resolves each property's $defs reference before inlining the schema, since a $ref to
     # a sibling $defs entry would dangle once this schema sits under a response rather than under
@@ -210,9 +201,7 @@ def test_the_published_problem_schema_stays_open_to_new_fields(tmp_path: Path):
     export_openapi(destination)
 
     schema = json.loads(destination.read_text(encoding="utf-8"))
-    problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"][
-        "schema"
-    ]
+    problem = schema["paths"]["/v1/render"]["post"]["responses"]["400"]["content"]["application/problem+json"]["schema"]
     assert problem["additionalProperties"] is True
 
 

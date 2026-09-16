@@ -10,11 +10,9 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.core.output_rules import CONFORMANCE_VECTORS, OUTPUT_RULES_VERSION, RULES, RULES_WITHOUT_VECTORS, output_rules
-from app.main import app
 from app.models import (
     DEFAULT_PNG_PPI,
     IMAGE_OUTPUT_FORMATS,
@@ -35,9 +33,8 @@ from app.models import (
     PdfVersion,
     RenderRequest,
 )
+from tests.conftest import TOKEN, client
 
-client = TestClient(app)
-TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
 SOURCE = '#text("hello")'
 
 
@@ -101,7 +98,7 @@ def test_the_document_publishes_exactly_the_rules_models_enforces():
 
 
 def test_document_states_the_enforced_limits_and_tables():
-    document = output_rules()
+    document = output_rules().published()
 
     assert document["output_rules_version"] == OUTPUT_RULES_VERSION
     assert document["formats"] == [output_format.value for output_format in OutputFormat]
@@ -128,7 +125,7 @@ def test_document_states_the_enforced_limits_and_tables():
 
 def test_the_static_document_carries_no_deployment_configuration():
     """The output rules are a property of the code; a limit here would invite a caller to pin it."""
-    document = output_rules()
+    document = output_rules().published()
 
     assert "limits" not in document
     assert not {"max_output_files", "max_output_bytes", "font_path", "environment"} & document.keys()
@@ -206,14 +203,14 @@ def test_a_mirror_built_from_the_document_alone_agrees_with_the_service(vector: 
     reads it from there; asking this one to answer them would be asking the document to publish the
     request schema a second time.
     """
-    document = output_rules()
+    document = output_rules().published()
 
     assert _mirror(document, vector["output"]) == vector.get("rule")
 
 
 def test_the_mirror_is_not_vacuous():
     """A mirror that returned None for everything would pass every accepted vector above."""
-    document = output_rules()
+    document = output_rules().published()
 
     assert _mirror(document, {"format": "pdf", "standards": ["a-2b", "a-3b"]}) == "multiple_pdf_a_standards"
     assert _mirror(document, {"format": "png", "pages": "1-2"}) == "pages_requires_archive"
@@ -225,7 +222,7 @@ def test_every_format_is_claimed_by_exactly_one_block():
 
     Publishing the two lists only removes the guess while they cover `formats` without overlapping.
     """
-    document = output_rules()
+    document = output_rules().published()
     pdf_formats = set(document["pdf"]["formats"])
     image_formats = set(document["image"]["formats"])
 
@@ -240,7 +237,7 @@ def test_the_published_rule_order_is_the_order_the_mirror_applies():
     Without it the mirror could hardcode an order matching today's and agree with every vector
     while the document said something else, leaving a caller who followed the document wrong.
     """
-    document = output_rules()
+    document = output_rules().published()
     breaks_two = {"format": "pdf", "version": "1.4", "standards": ["a-2b", "a-3b"]}
     moved = OutputRuleId.version_conflicts_with_standard.value
 
