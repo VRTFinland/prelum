@@ -267,6 +267,55 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "code": "invalid_request",
         "rule": OutputRuleId.page_range_end_precedes_start.value,
     },
+    # Each of these breaks two adjacent rules at once, so the id it reports is what makes
+    # `rule_evaluation` — "the first to fail is the one reported" — a checked claim rather than
+    # prose. The order itself lives in the statement sequence of parse_page_selection and
+    # validate_pdf_options, where reordering two _reject calls while adding a rule is a natural
+    # thing to do; without these, a mirror built from this document would then report a different
+    # id from the service for the same object, and nothing would fail.
+    #
+    # These six are every adjacent pair an `output` object can break together. The rest are
+    # unobservable, and so carry no claim to check: duplicate_standards with
+    # multiple_pdf_a_standards, and multiple_pdf_a_standards with ua_1_with_pdf_a_4, each need a
+    # third standard that max_standards refuses at the field level first; pages_requires_archive
+    # needs `archive` absent where page_with_archive needs it present; and the PDF and image rules
+    # apply to different formats, so their relative order is not an order at all.
+    {
+        "output": {"format": "pdf", "pages": ",".join(["100"] * 65)},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_too_long.value,
+    },
+    {
+        "output": {"format": "pdf", "pages": ",".join(["1"] * 64 + ["x"])},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_too_many_segments.value,
+    },
+    {
+        "output": {"format": "pdf", "pages": "3-2,x"},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_selection_malformed.value,
+    },
+    {
+        "output": {"format": "pdf", "version": "1.7", "standards": ["ua-1", "a-4"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.ua_1_with_pdf_a_4.value,
+    },
+    {
+        "output": {"format": "pdf", "version": "2.0", "standards": ["ua-1", "a-2b"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.version_conflicts_with_standard.value,
+    },
+    {
+        "output": {"format": "pdf", "version": "2.0", "standards": ["ua-1"], "pages": "1"},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.ua_1_with_pdf_2_0.value,
+    },
     # Field-level rules from here on: the schema states each one, and the rejection carries no rule
     # id because Pydantic's own error type already tells them apart.
     {"output": {"format": "tiff"}, "accepted": False, "code": "unsupported_format"},
