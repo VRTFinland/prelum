@@ -38,15 +38,12 @@ from app.core.errors import (
     for_message,
 )
 from app.models import (
+    ImageOutput,
     JSONValue,
-    OutputFormat,
     PageSelectionLimitError,
-    PdfOutput,
-    PngOutput,
     RenderFile,
     RenderJob,
     RenderOutput,
-    SvgOutput,
     bound_page_selection,
 )
 from app.render.templates import RENDER_TEMP_PREFIX, ensure_project_root_fits
@@ -165,13 +162,6 @@ def resource_limit_args(settings: Settings) -> tuple[str, ...]:
     if limit is None:
         return ()
     return (str(constants.PRLIMIT_PATH), f"--data={limit}", "--")
-
-
-FORMAT_MAP: dict[OutputFormat, tuple[str, str]] = {
-    OutputFormat.pdf: ("pdf", "application/pdf"),
-    OutputFormat.svg: ("svg", "image/svg+xml"),
-    OutputFormat.png: ("png", "image/png"),
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -402,8 +392,8 @@ class TypstRenderer:
         _ = destination.write_bytes(prelude.encode("utf-8") + source_bytes)
 
     def _output_plan(self, layout: _ProjectLayout, output: RenderOutput) -> _OutputPlan:
-        ext, content_type = FORMAT_MAP[output.format]
-        if isinstance(output, (PngOutput, SvgOutput)) and output.archive == "zip":
+        ext = output.extension
+        if isinstance(output, ImageOutput) and output.archive == "zip":
             try:
                 page_selection = bound_page_selection(output.pages, limit=self.settings.max_output_files)
             except PageSelectionLimitError as exc:
@@ -422,7 +412,7 @@ class TypstRenderer:
             output=output,
             typst_output=layout.output_path(ext),
             extension=ext,
-            content_type=content_type,
+            content_type=output.content_type,
             response_extension=ext,
             disposition="inline",
         )
@@ -556,7 +546,7 @@ class TypstRenderer:
             str(package_path),
             "--package-cache-path",
             str(package_dir),
-            *self._typst_output_args(output, page_selection=plan.page_selection),
+            *output.cli_args(page_selection=plan.page_selection),
             str(bound_template),
             str(output_path),
             cwd=project_root,
@@ -628,34 +618,9 @@ class TypstRenderer:
         elif await asyncio.to_thread(output_path.exists):
             return []
 
-        if isinstance(output, (PngOutput, SvgOutput)) and (output.page is not None or output.pages is not None):
+        if isinstance(output, ImageOutput) and (output.page is not None or output.pages is not None):
             raise InlineTemplateError("Selected image pages do not exist")
         raise RenderError("Typst did not produce output file")
-
-    def _typst_output_args(self, output: RenderOutput, *, page_selection: str | None = None) -> tuple[str, ...]:
-        if isinstance(output, PdfOutput):
-            args: list[str] = []
-            standards = [standard.value for standard in output.standards]
-            if output.version is not None:
-                standards.insert(0, output.version.value)
-            if standards:
-                args.extend(("--pdf-standard", ",".join(standards)))
-            if output.pages is not None:
-                args.extend(("--pages", output.pages))
-            return tuple(args)
-
-        if isinstance(output, PngOutput):
-            args = ["--ppi", str(output.ppi)]
-            selected_pages = page_selection or (str(output.page) if output.page is not None else None)
-            if selected_pages is not None:
-                args.extend(("--pages", selected_pages))
-            return tuple(args)
-
-        if isinstance(output, SvgOutput):
-            selected_pages = page_selection or (str(output.page) if output.page is not None else None)
-            if selected_pages is not None:
-                return "--pages", selected_pages
-        return ()
 
     def _typst_env(self) -> dict[str, str]:
         """

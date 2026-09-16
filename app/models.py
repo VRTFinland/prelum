@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, LiteralString, NoReturn, cast
+from typing import Annotated, ClassVar, Literal, LiteralString, NoReturn, cast, override
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
@@ -233,10 +233,30 @@ class ConstraintsResponse(BaseModel):
 type ArchiveFormat = Literal["zip"]
 
 
-class _RenderOutputBase(BaseModel):
+class RenderOutputBase(BaseModel):
+    """
+    What every output shares, and what each format must declare about itself.
+
+    `extension`, `content_type` and `cli_args` live here rather than in the renderer so that adding
+    a format is one class: there is no second table of extensions, no third of media types, and no
+    isinstance ladder deciding which flags to pass. Public because the renderer narrows to it.
+    """
+
     filename: str | None = None
 
     model_config: ClassVar[ConfigDict] = _STRICT
+
+    extension: ClassVar[str]
+    content_type: ClassVar[str]
+
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        """
+        The typst flags this output needs beyond the project-wide ones.
+
+        :param page_selection: The archive's bounded selection, which replaces the model's own page
+            for a multi-page run; ignored by a format that cannot be archived.
+        """
+        return ()
 
 
 # Public because app/core/output_rules.py publishes each of them, and a limit with two spellings is
@@ -411,8 +431,10 @@ def _validate_page_selection(value: str) -> str:
 type PageSelection = Annotated[str, AfterValidator(_validate_page_selection)]
 
 
-class PdfOutput(_RenderOutputBase):
+class PdfOutput(RenderOutputBase):
     format: Literal[OutputFormat.pdf] = OutputFormat.pdf
+    extension: ClassVar[str] = "pdf"
+    content_type: ClassVar[str] = "application/pdf"
     version: PdfVersion | None = None
     standards: list[PdfStandard] = Field(default_factory=list, max_length=MAX_PDF_STANDARDS)
     pages: PageSelection | None = None
@@ -443,28 +465,56 @@ class PdfOutput(_RenderOutputBase):
 
         return self
 
+    @override
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        """A PDF cannot be archived, so it has no selection but its own `pages`."""
+        args: list[str] = []
+        standards = [standard.value for standard in self.standards]
+        if self.version is not None:
+            standards.insert(0, self.version.value)
+        if standards:
+            args.extend(("--pdf-standard", ",".join(standards)))
+        if self.pages is not None:
+            args.extend(("--pages", self.pages))
+        return tuple(args)
 
-class _ImageOutputBase(_RenderOutputBase):
+
+class ImageOutput(RenderOutputBase):
+    """The options every raster or vector image output shares, and the answer to "is this an image"."""
+
     page: int | None = Field(default=None, ge=MIN_IMAGE_PAGE, strict=True)
     archive: ArchiveFormat | None = None
     pages: PageSelection | None = None
 
     @model_validator(mode="after")
-    def validate_image_options(self) -> _ImageOutputBase:
+    def validate_image_options(self) -> ImageOutput:
         if self.archive is None and self.pages is not None:
             _reject(OutputRuleId.pages_requires_archive, "pages requires archive 'zip'")
         if self.archive is not None and self.page is not None:
             _reject(OutputRuleId.page_with_archive, "page cannot be combined with an archive")
         return self
 
+    @override
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        selected_pages = page_selection or (str(self.page) if self.page is not None else None)
+        return () if selected_pages is None else ("--pages", selected_pages)
 
-class PngOutput(_ImageOutputBase):
+
+class PngOutput(ImageOutput):
     format: Literal[OutputFormat.png] = OutputFormat.png
+    extension: ClassVar[str] = "png"
+    content_type: ClassVar[str] = "image/png"
     ppi: int = Field(default=DEFAULT_PNG_PPI, ge=MIN_PNG_PPI, le=MAX_PNG_PPI, strict=True)
 
+    @override
+    def cli_args(self, *, page_selection: str | None = None) -> tuple[str, ...]:
+        return ("--ppi", str(self.ppi), *super().cli_args(page_selection=page_selection))
 
-class SvgOutput(_ImageOutputBase):
+
+class SvgOutput(ImageOutput):
     format: Literal[OutputFormat.svg] = OutputFormat.svg
+    extension: ClassVar[str] = "svg"
+    content_type: ClassVar[str] = "image/svg+xml"
 
 
 type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discriminator="format")]
@@ -472,7 +522,7 @@ type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discrimin
 # Which model validates each `format`, and so which rules apply to it. Both sets are published, so
 # that a mirror never reads "not pdf, therefore image": a fourth format added to neither set would
 # silently inherit the image rules. Every OutputFormat must be claimed by exactly one of them.
-OUTPUT_MODELS: dict[OutputFormat, type[_RenderOutputBase]] = {
+OUTPUT_MODELS: dict[OutputFormat, type[RenderOutputBase]] = {
     OutputFormat.pdf: PdfOutput,
     OutputFormat.png: PngOutput,
     OutputFormat.svg: SvgOutput,
@@ -481,7 +531,7 @@ PDF_OUTPUT_FORMATS = frozenset(
     output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, PdfOutput)
 )
 IMAGE_OUTPUT_FORMATS = frozenset(
-    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, _ImageOutputBase)
+    output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, ImageOutput)
 )
 
 # The wire spellings OUTPUT_MODELS claims, for the check that runs before the discriminated union.

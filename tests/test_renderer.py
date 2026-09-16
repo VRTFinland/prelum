@@ -28,6 +28,7 @@ from app.core.errors import (
     TooManyOutputFilesError,
 )
 from app.models import (
+    OUTPUT_MODELS,
     JSONValue,
     OutputFormat,
     PdfOutput,
@@ -38,7 +39,7 @@ from app.models import (
     RenderRequest,
     SvgOutput,
 )
-from app.render.renderer import FORMAT_MAP, TypstRenderer, _OutputPlan, _ProjectLayout, resource_limit_args
+from app.render.renderer import TypstRenderer, _OutputPlan, _ProjectLayout, resource_limit_args
 from tests.conftest import FakeProc, FakeTypst
 
 _OMITTED = object()
@@ -97,8 +98,18 @@ def test_escape_string_handles_unsafe_unicode(renderer: TypstRenderer):
     assert renderer._escape_string("a\x00\u202eb") == r"a\u{0000}b"
 
 
-def test_every_output_format_has_render_metadata():
-    assert set(FORMAT_MAP) == set(OutputFormat)
+def test_every_output_format_is_claimed_by_exactly_one_model_that_describes_itself():
+    """
+    The invariant OUTPUT_MODELS's own comment asserts, now that it is the only format registry.
+
+    A format missing from it is one the renderer cannot plan an output for; one whose model omits
+    an extension or a media type would reach the response with neither.
+    """
+    assert set(OUTPUT_MODELS) == set(OutputFormat)
+    for output_format, model in OUTPUT_MODELS.items():
+        assert model.extension, output_format
+        assert model.content_type, output_format
+    assert len({model.extension for model in OUTPUT_MODELS.values()}) == len(OUTPUT_MODELS)
 
 
 @pytest.mark.parametrize(
