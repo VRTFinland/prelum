@@ -7,10 +7,10 @@ commit := $(shell git rev-parse --short HEAD 2>/dev/null)
 dirty := $(shell git diff --quiet HEAD 2>/dev/null || echo -dirty)
 version := $(or ${git_describe},$(if ${package_version},${package_version}$(if ${commit},-g${commit})${dirty}),dev)
 DOCKER_TAG ?= ${version}
-# Override REGISTRY to push somewhere other than the local daemon, e.g.
-#   make push REGISTRY=ghcr.io/vrtfinland
+# Published images live in GHCR; override REGISTRY only to push elsewhere, e.g.
+#   make push REGISTRY=localhost:5000
 IMAGE_NAME ?= prelum
-REGISTRY ?=
+REGISTRY ?= ghcr.io/vrtfinland
 IMAGE := $(if ${REGISTRY},${REGISTRY}/,)${IMAGE_NAME}:${DOCKER_TAG}
 LATEST_IMAGE := $(if ${REGISTRY},${REGISTRY}/,)${IMAGE_NAME}:latest
 DOCS_PORT ?= 9876
