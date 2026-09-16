@@ -53,7 +53,7 @@ jobs:
             "uv sync --locked --extra sentry \
             && uv run ruff check . \
             && uv run ruff format --check . \
-            && uv run ty check app \
+            && uv run ty check app scripts \
             && uv run pytest"
 
   build:
