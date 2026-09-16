@@ -312,14 +312,6 @@ async def test_render_accepts_base64_at_exactly_the_limit(
 
 
 @pytest.mark.asyncio
-async def test_render_rejects_too_many_files(make_renderer: Callable[..., TypstRenderer]):
-    renderer = make_renderer(max_inline_files=2)
-    files = {f"lib/{index}.typ": RenderFile(encoding="text", content="x") for index in range(3)}
-    with pytest.raises(InvalidFileDataError):
-        await renderer.render(_job(files=files))
-
-
-@pytest.mark.asyncio
 async def test_render_propagates_disk_failures(
     monkeypatch: pytest.MonkeyPatch,
     make_renderer: Callable[..., TypstRenderer],
@@ -928,20 +920,6 @@ async def test_run_typst_blocks_remote_and_local_packages():
     ):
         with pytest.raises(InlineTemplateError):
             await renderer.render(_job(source=source))
-
-
-@pytest.mark.asyncio
-async def test_too_many_files_entries_reports_count_and_limit(make_renderer: Callable[..., TypstRenderer]):
-    renderer = make_renderer(max_inline_files=1)
-    files = {
-        "a.typ": RenderFile(encoding="text", content="a"),
-        "b.typ": RenderFile(encoding="text", content="b"),
-    }
-    with pytest.raises(InvalidFileDataError) as exc_info:
-        await renderer.render(_job(files=files))
-    # The configured limit is the lower of the two, so this is the path a caller branching on
-    # context.rule actually reaches; the structural cap in templates.py is never hit by default.
-    assert exc_info.value.context == {"count": 2, "limit": 1, "rule": "too_many_keys"}
 
 
 @pytest.mark.asyncio

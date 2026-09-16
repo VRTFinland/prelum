@@ -31,6 +31,7 @@ from app.core.metrics import (
 from app.deps import get_render_semaphore, get_renderer, get_settings
 from app.models import ConstraintsResponse, Problem, RenderJob, RenderRequest
 from app.render.renderer import TypstRenderer
+from app.render.templates import effective_key_limit, ensure_key_count_fits
 
 router = APIRouter()
 logger: FilteringBoundLogger = cast(FilteringBoundLogger, structlog.get_logger())
@@ -175,6 +176,12 @@ async def render(
     :raises ServiceUnavailableError: For unexpected or unhandled errors during rendering.
     :raises asyncio.CancelledError: If the client disconnects or the request is cancelled.
     """
+    # Before the permit, and before any metric bookkeeping: the configured cap is the lower of the
+    # two a caller is promised, and enforcing it in the renderer meant an over-limit request spent a
+    # render slot to be refused. The model layer applies the structural cap, which is deployment-
+    # independent and all it can know; this is the deployment's own policy.
+    ensure_key_count_fits(len(request.files), limit=effective_key_limit(settings.max_inline_files))
+
     job = RenderJob(source=request.source, files=request.files, data=request.data, output=request.output)
     output_format = job.output.format.value
 

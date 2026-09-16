@@ -206,6 +206,48 @@ def test_constraints_publishes_the_output_rules_under_their_own_version():
     assert set(accepted) == {"output", "accepted"}
 
 
+def test_a_files_mapping_over_the_configured_cap_is_refused_before_a_render_slot(
+    configured_client: Callable[..., TestClient],
+    fake_render_result: RenderResult,
+):
+    """
+    The configured cap is the lower of the two a caller is promised, so this is the path it meets.
+
+    Enforced at the route rather than in the renderer, which is why this is an HTTP test: an
+    over-limit request used to acquire a render permit and build a temporary project before being
+    refused. A permit spent on a request that cannot be served is capacity taken from one that can.
+    """
+    limited_client = configured_client(max_inline_files="1")
+    files = {name: {"encoding": "text", "content": "x"} for name in ("a.typ", "b.typ")}
+
+    with patched_render(fake_render_result) as render:
+        response = limited_client.post("/v1/render", json={"source": SOURCE, "files": files}, headers=TOKEN)
+
+    # The claim in the name: refused before anything a render slot would have been taken for.
+    render.assert_not_awaited()
+    assert response.status_code == 400
+    problem = response.json()
+    assert problem["code"] == "invalid_file_data"
+    # The number here and the one published as limits.effective_max_files come from one expression,
+    # so a caller that mirrors the published value is never refused by a different one.
+    assert problem["context"] == {"count": 2, "limit": 1, "rule": "too_many_keys"}
+    assert limited_client.get("/v1/constraints", headers=TOKEN).json()["limits"]["effective_max_files"] == 1
+
+
+def test_a_files_mapping_within_the_configured_cap_still_reaches_the_renderer(
+    configured_client: Callable[..., TestClient],
+    fake_render_result: RenderResult,
+):
+    """The other half of the pair: the cap must not refuse a request that fits under it."""
+    limited_client = configured_client(max_inline_files="2")
+    files = {name: {"encoding": "text", "content": "x"} for name in ("a.typ", "b.typ")}
+
+    with patched_render(fake_render_result):
+        response = limited_client.post("/v1/render", json={"source": SOURCE, "files": files}, headers=TOKEN)
+
+    assert response.status_code == 200
+
+
 def test_constraints_reflects_the_deployment_rather_than_the_defaults(
     configured_client: Callable[..., TestClient],
 ):

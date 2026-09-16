@@ -289,25 +289,17 @@ class TypstRenderer:
         the model layer. The escape check below asserts that already-proven invariant on a security
         boundary; the errno filter covers what only the filesystem can refuse.
 
+        The key count is settled before a render slot is taken — the model applies the structural cap
+        and the route the configured one — so it is not re-checked here.
+
         :param project_root: Already created by the caller.
-        :raises InvalidFileDataError: If there are too many entries, base64 content is malformed, a key
-            escapes the project root, two keys differ only in case, or the keys describe a layout
-            that cannot be written.
+        :raises InvalidFileDataError: If base64 content is malformed, a key escapes the project root,
+            two keys differ only in case, or the keys describe a layout that cannot be written.
         :raises OSError: If writing fails for a reason outside the caller's control.
         :raises TemplateFileTooLargeError: If an entry exceeds ``max_inline_file_bytes``.
         """
         if not files:
             return
-
-        limit = self.settings.max_inline_files
-        if len(files) > limit:
-            raise InvalidFileDataError(
-                f"Too many files entries: {len(files)} exceeds limit {limit}",
-                # The same published rule as the structural cap in templates.py, enforced here
-                # against the configurable limit. Without the label a caller branching on
-                # context.rule would never see it: the configured limit is the lower of the two.
-                context={"count": len(files), "limit": limit, "rule": "too_many_keys"},
-            )
 
         resolved_root = project_root.resolve()
         for relative_key, file_entry in files.items():

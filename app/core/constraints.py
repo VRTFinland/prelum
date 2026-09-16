@@ -24,6 +24,7 @@ from app.render.templates import (
     MAX_KEY_LENGTH,
     MAX_KEY_SEGMENT_LENGTH,
     SAFE_SEGMENT_CHARACTER_CLASS,
+    effective_key_limit,
 )
 
 # Rises whenever any published rule changes, so a caller can diff its mirror against a known version
@@ -181,7 +182,7 @@ def build_constraints(settings: Settings) -> ConstraintsResponse:
         **vars(files_key_rules()),
         output_rules=output_rules(),
         limits=ConstraintLimits(
-            effective_max_files=min(MAX_INLINE_FILE_KEYS, settings.max_inline_files),
+            effective_max_files=effective_key_limit(settings.max_inline_files),
             max_inline_files=settings.max_inline_files,
             max_inline_file_bytes=settings.max_inline_file_bytes,
             max_template_source_bytes=settings.max_template_source_bytes,
