@@ -5,17 +5,15 @@ from collections.abc import Callable
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from app.core.constants import API_TOKEN_HEADER
 from app.core.errors import RenderError, TooManyOutputFilesError
 from app.deps import get_renderer
 from app.main import app
 from app.models import RenderFile, RenderRequest
 from app.render.renderer import RenderResult, TypstRenderer
-
-client = TestClient(app)
-TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
+from tests.conftest import TOKEN, client, patched_render
 
 
 @pytest.mark.parametrize("codepoint", [0xD800, 0xDFFF])
@@ -203,7 +201,7 @@ def test_v1_route_builds_one_render_job():
         "output": {"format": "pdf", "filename": "report.pdf"},
     }
 
-    with patch.object(TypstRenderer, "render", new=AsyncMock(return_value=fake_result)) as render:
+    with patched_render(fake_result) as render:
         response = client.post("/v1/render", json=payload, headers=TOKEN)
 
     assert response.status_code == 200
@@ -497,7 +495,7 @@ def test_v1_selects_pdf_pages_and_version():
 
 
 def test_v1_problem_responses_always_carry_context():
-    response = client.post("/v1/render", json={"source": '#text("hello")'}, headers={"X-Prelum-Api-Token": "wrong"})
+    response = client.post("/v1/render", json={"source": '#text("hello")'}, headers={API_TOKEN_HEADER: "wrong"})
 
     assert response.status_code == 403
     assert response.json()["code"] == "forbidden"

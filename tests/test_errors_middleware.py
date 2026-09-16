@@ -17,9 +17,8 @@ from app.core.errors import (
     StringTooLargeError,
     app_error_handler,
 )
-from app.main import app, create_app
-
-client = TestClient(app)
+from app.main import create_app
+from tests.conftest import TOKEN, client
 
 
 def _request() -> Request:
@@ -129,7 +128,7 @@ def test_validation_error_returns_400_with_string_detail_and_structured_errors()
     response = client.post(
         "/v1/render",
         json={"invalid": "no source field"},
-        headers={"X-Prelum-Api-Token": "dev-only-insecure-token"},
+        headers=TOKEN,
     )
     assert response.status_code == 400
     data = response.json()
@@ -202,7 +201,7 @@ def test_validation_errors_bound_caller_supplied_location_segments():
     response = client.post(
         "/v1/render",
         json={"source": '#text("hi")', "files": {key: {"encoding": "bogus", "content": "x"}}},
-        headers={"X-Prelum-Api-Token": "dev-only-insecure-token"},
+        headers=TOKEN,
     )
 
     assert response.status_code == 400
@@ -218,7 +217,7 @@ def test_validation_error_locations_keep_array_indices_as_integers():
     response = client.post(
         "/v1/render",
         json={"source": '#text("hi")', "output": {"format": "pdf", "standards": ["a-1b", "nonsense"]}},
-        headers={"X-Prelum-Api-Token": "dev-only-insecure-token"},
+        headers=TOKEN,
     )
 
     assert response.status_code == 400
@@ -238,7 +237,7 @@ def test_validation_messages_are_bounded_too():
     response = client.post(
         "/v1/render",
         json={"source": "x", "output": {"format": marker}},
-        headers={"X-Prelum-Api-Token": "dev-only-insecure-token"},
+        headers=TOKEN,
     )
 
     assert response.status_code == 400
@@ -254,7 +253,7 @@ def test_a_legitimate_validation_message_survives_the_bound():
     response = client.post(
         "/v1/render",
         json={"source": "x", "output": {"format": "gif"}},
-        headers={"X-Prelum-Api-Token": "dev-only-insecure-token"},
+        headers=TOKEN,
     )
 
     (error,) = [error for error in response.json()["context"]["errors"] if error["type"] == "union_tag_invalid"]
@@ -298,7 +297,7 @@ def test_a_body_that_no_json_parser_accepts_is_a_problem_response():
         "/v1/render",
         content=b'{"source": 1' + b"0" * 5000 + b"}",
         headers={
-            "X-Prelum-Api-Token": "dev-only-insecure-token",
+            **TOKEN,
             "Content-Type": "application/json",
         },
     )
@@ -310,9 +309,6 @@ def test_a_body_that_no_json_parser_accepts_is_a_problem_response():
     assert body["context"] == {}
 
 
-_TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
-
-
 def test_an_excessive_files_mapping_is_refused_before_its_entries_are_validated():
     """
     The key-count cap used to sit in a model_validator(mode="after").
@@ -322,7 +318,7 @@ def test_an_excessive_files_mapping_is_refused_before_its_entries_are_validated(
     A 1 MB body came back as a 16 MB response, all outside the render semaphore.
     """
     files = {f"f{index}.txt": {"encoding": 1, "content": 2} for index in range(5000)}
-    response = client.post("/v1/render", json={"source": "x", "files": files}, headers=_TOKEN)
+    response = client.post("/v1/render", json={"source": "x", "files": files}, headers=TOKEN)
 
     assert response.status_code == 400
     body = response.json()
@@ -335,7 +331,7 @@ def test_an_excessive_files_mapping_is_refused_before_its_entries_are_validated(
 def test_a_long_validation_error_list_is_capped_and_says_so():
     """A mapping within the key cap can still carry hundreds of faults; the response must stay small."""
     files = {f"f{index}.txt": {"encoding": 1, "content": 2} for index in range(300)}
-    response = client.post("/v1/render", json={"source": "x", "files": files}, headers=_TOKEN)
+    response = client.post("/v1/render", json={"source": "x", "files": files}, headers=TOKEN)
 
     assert response.status_code == 400
     context = response.json()["context"]
@@ -346,7 +342,7 @@ def test_a_long_validation_error_list_is_capped_and_says_so():
 
 def test_a_short_validation_error_list_is_published_whole():
     """The cap exists for amplification, not to hide the two errors a caller actually needs."""
-    response = client.post("/v1/render", json={"source": "x", "output": {"format": "gif"}}, headers=_TOKEN)
+    response = client.post("/v1/render", json={"source": "x", "output": {"format": "gif"}}, headers=TOKEN)
 
     context = response.json()["context"]
     assert 0 < len(context["errors"]) < 20

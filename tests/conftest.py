@@ -8,20 +8,88 @@ import os
 os.environ.setdefault("PRELUM_ENVIRONMENT", "test")
 
 import asyncio
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi.testclient import TestClient
 
-from app.core.config import Settings
-from app.core.constants import INLINE_TEMPLATE_FILENAME
-from app.render.renderer import TypstRenderer
+from app import deps
+from app.core.config import DEV_DEFAULT_TOKEN, Settings
+from app.core.constants import API_TOKEN_HEADER, INLINE_TEMPLATE_FILENAME
+from app.main import app, create_app
+from app.render.renderer import RenderResult, TypstRenderer
 
 # Template and output are addressed from the end of typst's argv, so a wrapper prefix cannot move
 # them. Kept here rather than in each test so the convention is stated once.
 _ARGV_TEMPLATE = -2
 _ARGV_OUTPUT = -1
+
+# Read from the code that defines them rather than transcribed. Spelled out per module, a renamed
+# header or a rotated dev default needed a grep across files that imported neither constant —
+# exactly the drift API_TOKEN_HEADER exists to prevent.
+TOKEN = {API_TOKEN_HEADER: DEV_DEFAULT_TOKEN}
+
+# One client over the module-level app, shared the way the app itself already is. A test that needs
+# a differently configured app, or lifespan events, builds its own — see `configured_client`.
+client = TestClient(app)
+
+
+def _clear_dependency_caches() -> None:
+    """
+    Drop every @cache'd dependency, so the next one is built from the current environment.
+
+    All three, not just settings: get_renderer and get_render_semaphore each close over the
+    settings they were built from, so leaving either behind hands the next test a collaborator
+    configured for the previous one.
+    """
+    deps.get_settings.cache_clear()
+    deps.get_renderer.cache_clear()
+    deps.get_render_semaphore.cache_clear()
+
+
+@pytest.fixture
+def configured_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., TestClient]]:
+    """
+    A client over an app built from the given PRELUM_* environment, e.g. `max_inline_files="7"`.
+
+    Settings is @cache'd, so an app is only honest about new environment once the caches are
+    cleared: before, so this app reads the new values, and after, so the next test does not. Done
+    here rather than in a per-test try/finally, where one missed `finally` poisons unrelated tests.
+    """
+
+    def build(**environment: str) -> TestClient:
+        for name, value in environment.items():
+            monkeypatch.setenv(f"PRELUM_{name.upper()}", value)
+        _clear_dependency_caches()
+        return TestClient(create_app())
+
+    yield build
+    _clear_dependency_caches()
+
+
+@pytest.fixture
+def fake_render_result() -> RenderResult:
+    """A successful PDF render, for the route tests that must not reach a compiler."""
+    return RenderResult(bytes=b"%PDF-1.4 fake", content_type="application/pdf", filename="test.pdf")
+
+
+@contextmanager
+def patched_render(outcome: RenderResult | BaseException) -> Iterator[AsyncMock]:
+    """
+    Replace the render step with a settled outcome, yielding the mock for tests that assert on it.
+
+    :param outcome: The result the render returns, or the error it raises.
+
+    A context manager rather than a fixture because the patch has to be scoped to the request under
+    test: several tests call the endpoint again outside it to assert the unpatched behaviour.
+    """
+    render = AsyncMock(side_effect=outcome) if isinstance(outcome, BaseException) else AsyncMock(return_value=outcome)
+    with patch.object(TypstRenderer, "render", new=render):
+        yield render
 
 
 @pytest.fixture

@@ -10,11 +10,9 @@ from collections.abc import Callable
 from typing import Any, cast
 
 import pytest
-from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from app.core.output_rules import CONFORMANCE_VECTORS, OUTPUT_RULES_VERSION, RULES, RULES_WITHOUT_VECTORS, output_rules
-from app.main import app
 from app.models import (
     DEFAULT_PNG_PPI,
     IMAGE_OUTPUT_FORMATS,
@@ -35,9 +33,8 @@ from app.models import (
     PdfVersion,
     RenderRequest,
 )
+from tests.conftest import TOKEN, client
 
-client = TestClient(app)
-TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
 SOURCE = '#text("hello")'
 
 
