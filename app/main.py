@@ -1,19 +1,19 @@
 import os
 import subprocess
 import uuid
-from collections.abc import Awaitable, Callable
+from contextlib import suppress
 from http import HTTPStatus
-from typing import cast, override
+from typing import cast
 
 import structlog
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse, Response
+from fastapi.responses import JSONResponse
 from prometheus_fastapi_instrumentator import Instrumentator
+from starlette.datastructures import MutableHeaders
 from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp, ExceptionHandler, Message
+from starlette.types import ASGIApp, ExceptionHandler, Message, Receive, Scope, Send
 from structlog.typing import FilteringBoundLogger
 
 from app.api.routes import router
@@ -50,7 +50,14 @@ def _declared_size(request: Request) -> int | None:
         return None
 
 
-class BodyLimitMiddleware(BaseHTTPMiddleware):
+# Both middlewares below are plain ASGI rather than BaseHTTPMiddleware subclasses. That base wraps
+# every request in an anyio task group and a pair of memory object streams, measured here at about
+# 190us per layer per request against a bare app answering /health in 153us — so two layers more
+# than doubled the cost of every request, for a byte counter and a header copy. /v1/render never
+# noticed it against a typst fork; /health, /metrics and /v1/constraints paid it in full.
+
+
+class BodyLimitMiddleware:
     """
     Reject an oversized request body while it is still arriving.
 
@@ -59,47 +66,84 @@ class BodyLimitMiddleware(BaseHTTPMiddleware):
     being buffered whole and then rejected.
     """
 
-    max_body: int
-
     def __init__(self, app: ASGIApp, max_body: int) -> None:
-        super().__init__(app)
-        self.max_body = max_body
+        self.app: ASGIApp = app
+        self.max_body: int = max_body
 
-    def _too_large(self, request: Request) -> RequestTooLargeError:
-        return RequestTooLargeError(limit=self.max_body, declared_size=_declared_size(request))
+    def _too_large(self, scope: Scope) -> RequestTooLargeError:
+        return RequestTooLargeError(limit=self.max_body, declared_size=_declared_size(Request(scope)))
 
-    @override
-    async def dispatch(
-        self,
-        request: Request,
-        call_next: Callable[[Request], Awaitable[Response]],
-    ) -> Response:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
         received = 0
-        exceeded = False
-        original_receive = request.receive
+        refused = False
 
         async def receive_with_limit() -> Message:
-            nonlocal received, exceeded
-            message = await original_receive()
+            nonlocal received, refused
+            message = await receive()
             if message["type"] != "http.request":
                 return message
 
             body = message.get("body", b"") or b""
             received += len(body)
             if received > self.max_body:
-                exceeded = True
-                raise self._too_large(request)
+                refused = True
+                raise self._too_large(scope)
 
             return message
 
-        request._receive = receive_with_limit
+        async def send_unless_refused(message: Message) -> None:
+            # FastAPI wraps anything raised while it reads the body into a bare HTTPException(400),
+            # so the error above never reaches the handler registered for it. Once the body has been
+            # refused, whatever the app produced answers a request that is not being served, so it
+            # is dropped here — nothing reaches the server — and replaced below. Dropping rather
+            # than replacing is what plain ASGI allows: there is no buffered response to swap.
+            if not refused:
+                await send(message)
+
+        # Suppressed for the route that reads the body itself, without FastAPI's wrapping in the
+        # way; `refused` is what actually decides the answer either way.
+        with suppress(RequestTooLargeError):
+            await self.app(scope, receive_with_limit, send_unless_refused)
+        if refused:
+            await app_error_handler(Request(scope), self._too_large(scope))(scope, receive, send)
+
+
+class RequestIdMiddleware:
+    """
+    Carry a request id through the logging context and echo it back to the caller.
+
+    The caller's own x-request-id is preserved so a trace spans the services in front of Prelum;
+    absent one, a uuid4 is minted. Only `send` is wrapped: nothing here reads the body.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app: ASGIApp = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request_id = Request(scope).headers.get("x-request-id") or str(uuid.uuid4())
+        bind_request_context(request_id)
+        # The same place request.state reads from, so a route can still reach it by that name.
+        scope.setdefault("state", {})["request_id"] = request_id
+
+        async def send_with_request_id(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                # Assigned rather than appended, so the header is stated once even if a response
+                # already carries one.
+                MutableHeaders(scope=message)["x-request-id"] = request_id
+            await send(message)
+
         try:
-            response = await call_next(request)
-        except RequestTooLargeError as exc:
-            return app_error_handler(request, exc)
-        if exceeded:
-            return app_error_handler(request, self._too_large(request))
-        return response
+            await self.app(scope, receive, send_with_request_id)
+        finally:
+            clear_request_context()
 
 
 # Pydantic composes each message itself and some quote the offending value: an invalid discriminator
@@ -191,18 +235,6 @@ def _verify_render_memory_limit(settings: Settings) -> None:
 # Registered by create_app rather than defined inside it: none of the four closes over anything
 # there, and as nested functions they were most of its body and could not be reached without
 # building a whole app to drive them through a client.
-
-
-async def add_request_id(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
-    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
-    bind_request_context(request_id)
-    request.state.request_id = request_id
-    try:
-        response = await call_next(request)
-    finally:
-        clear_request_context()
-    response.headers["x-request-id"] = request_id
-    return response
 
 
 async def handle_app_error(request: Request, exc: AppError) -> JSONResponse:
@@ -326,7 +358,7 @@ def create_app() -> FastAPI:
 
     Instrumentator().instrument(app).expose(app)
 
-    app.add_middleware(BaseHTTPMiddleware, dispatch=add_request_id)
+    app.add_middleware(RequestIdMiddleware)
     app.add_exception_handler(AppError, cast(ExceptionHandler, handle_app_error))
     app.add_exception_handler(StarletteHTTPException, cast(ExceptionHandler, handle_http_exception))
     app.add_exception_handler(RequestValidationError, cast(ExceptionHandler, handle_validation_error))
