@@ -5,7 +5,7 @@ from pathlib import Path
 # Spelled here as well as in pyproject.toml because importlib.metadata cannot answer for a virtual
 # uv project (`package = false`, no [build-system]), and the runtime image carries no pyproject.toml
 # to read instead. Bump both; the OpenAPI test fails if they drift.
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 
 # Safe characters allowed in filenames and template names.
 # Includes alphanumeric characters, dot, hyphen, and underscore.

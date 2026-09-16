@@ -1,6 +1,6 @@
 [project]
 name = "prelum"
-version = "1.1.0"
+version = "1.2.0"
 description = "FastAPI-based Typst renderer service (Python 3.14)"
 readme = "README.md"
 license = "Apache-2.0"
