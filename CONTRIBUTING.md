@@ -11,6 +11,27 @@ scope can be agreed first.
 Keep changes focused. Avoid unrelated refactoring, generated files that the project does not use,
 and new dependencies when the existing implementation can reasonably do the job.
 
+## Branches
+
+`dev` is the living work branch and the target of every pull request. `main` holds the released
+state, so it moves only when a release reaches it.
+
+| Branch | Holds | Reached by |
+| --- | --- | --- |
+| `dev` | work merged and awaiting release | pull requests from feature branches |
+| `release/X.Y.Z` | one release being prepared | branched from `dev` |
+| `main` | the most recently released commit | merge from the release branch |
+
+A release is cut as `release/X.Y.Z` from `dev`, and the `release` workflow is dispatched from that
+branch: it refuses any other ref, so the commit that gets tagged is the one prepared for release
+rather than whatever landed on `dev` last. Afterwards the release branch merges into `main`, and
+`main` merges back into `dev`. The second merge is not optional: the version bump lives on the
+release commit, and the next release compares the dispatched version against `pyproject.toml`.
+
+Pushes to `dev` publish `ghcr.io/vrtfinland/prelum:dev`. The `latest` tag follows releases, not
+`dev`. Documentation is built on `dev` but published only from `main`, so the public site
+describes the released service.
+
 ## Development setup
 
 Prelum requires Python 3.14 or later and uses [uv](https://docs.astral.sh/uv/) for dependency
@@ -100,6 +121,8 @@ make regenerate-examples
 Use `uv` to change dependencies and commit the resulting `uv.lock` update.
 
 ## Pull requests
+
+Open pull requests against `dev`.
 
 A pull request should:
 

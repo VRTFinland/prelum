@@ -85,3 +85,37 @@ def test_a_version_that_cannot_be_read_fails_with_the_path_that_failed(tmp_path:
 
     with pytest.raises(RuntimeError, match=str(missing)):
         _ = constants._project_version()
+
+
+def test_releases_are_cut_from_a_release_branch():
+    """
+    Releases branch off dev, are tagged there, and reach main by merge afterwards.
+
+    The guard is what stops a release from being dispatched against dev's moving head, where the
+    commit that gets tagged is whatever landed last rather than the one prepared for release.
+    """
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
+
+    assert '"$GITHUB_REF" != refs/heads/release/*' in workflow
+    assert '"refs/heads/main"' not in workflow
+
+
+def test_dev_publishes_its_own_tag_without_taking_over_latest():
+    """
+    `latest` follows releases, not dev.
+
+    docker/metadata-action derives `latest` from the semver rules alone, so the branch rule gives
+    the dev head the `dev` tag and a bare `docker pull` keeps resolving to the newest release.
+    """
+    workflow = BUILD_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'branches: ["main", "dev"]' in workflow
+    assert "type=ref,event=branch" in workflow
+    assert "type=raw,value=latest" not in workflow
+
+
+def test_documentation_is_built_on_dev_but_published_only_from_main():
+    workflow = DOCS_WORKFLOW.read_text(encoding="utf-8")
+
+    assert 'branches: ["main", "dev"]' in workflow
+    assert "github.ref == 'refs/heads/main'" in workflow

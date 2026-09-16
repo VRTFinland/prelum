@@ -2,7 +2,10 @@ name: build
 
 on:
   push:
-    branches: ["main"]
+    # dev is the living work branch, so its head is published as the `dev` tag by the metadata
+    # action's branch rule. `latest` stays with the newest release, which is what a bare
+    # `docker pull ghcr.io/vrtfinland/prelum` has to keep meaning.
+    branches: ["main", "dev"]
   pull_request:
   workflow_dispatch:
   workflow_call:

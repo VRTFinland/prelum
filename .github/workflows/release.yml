@@ -38,8 +38,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           VERSION: ${{ inputs.version }}
         run: |
-          if [[ "$GITHUB_REF" != "refs/heads/main" ]]; then
-            echo "Releases must be dispatched from the main branch, not $GITHUB_REF" >&2
+          # Releases are cut from a release branch taken off dev, and merged to main afterwards.
+          # Dispatching from dev or main would tag a commit that no release branch reviewed.
+          if [[ "$GITHUB_REF" != refs/heads/release/* ]]; then
+            echo "Releases must be dispatched from a release/* branch, not $GITHUB_REF" >&2
             exit 1
           fi
           if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then

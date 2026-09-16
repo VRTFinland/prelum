@@ -48,8 +48,10 @@ The image runs as uid 10001. Font and package mounts need only be readable by th
 
 ## Use a published release
 
-Published images use `ghcr.io/vrtfinland/prelum:VERSION`. Pin a production deployment to the
-immutable digest reported with its release rather than relying on a mutable tag:
+Published images use `ghcr.io/vrtfinland/prelum:VERSION`, and `latest` follows the newest release.
+The head of the `dev` branch is published separately as `dev`, which is unreleased and unsupported.
+Pin a production deployment to the immutable digest reported with its release rather than relying
+on a mutable tag:
 
 ```bash
 docker pull ghcr.io/vrtfinland/prelum@sha256:YOUR_DIGEST
@@ -79,12 +81,13 @@ report its own version, and `uv` keeps the lockfile in step:
 uv version 1.2.1
 ```
 
-Commit the resulting `pyproject.toml` and `uv.lock` to `main` before dispatching the release.
+A release is prepared on a `release/X.Y.Z` branch cut from `dev`, and the bump is committed there.
 
-Maintainers then start releases manually from the `release` workflow on `main`, passing the same
-version. It must match `pyproject.toml`. The workflow creates the `vX.Y.Z` tag, runs the complete
-test and image publication workflow, and only then creates a GitHub release containing the
-immutable image digest.
+Maintainers then start the release manually from the `release` workflow, dispatched from that
+branch, passing the same version. The workflow refuses any other ref, and the version must match
+`pyproject.toml`. It creates the `vX.Y.Z` tag, runs the complete test and image publication
+workflow, and only then creates a GitHub release containing the immutable image digest. The release
+branch merges into `main` afterwards, and `main` merges back into `dev`.
 
 A retry continues a partial release only while its tag still points to the same commit. An existing
 GitHub release is a successful no-op. Image publication and releases remain disabled while the

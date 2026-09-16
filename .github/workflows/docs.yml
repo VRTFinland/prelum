@@ -2,7 +2,8 @@ name: docs
 
 on:
   push:
-    branches: ["main"]
+    # Built on dev, published only from main: the site documents the released service.
+    branches: ["main", "dev"]
   pull_request:
   workflow_dispatch:
 

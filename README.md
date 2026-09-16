@@ -94,9 +94,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before proposing a change.
 
 Published images use `ghcr.io/vrtfinland/prelum:<tag>`. The version is spelled once, in
 `pyproject.toml`: raise it with `uv version X.Y.Z` and commit the lockfile it updates before
-releasing. Releases are started manually from the `release` workflow on `main`; image publication,
-SBOM, provenance, Cosign signing and the GitHub release all run only after the complete test job
-succeeds. See
+releasing. Releases are cut on a `release/X.Y.Z` branch from `dev` and started manually from the
+`release` workflow on that branch; image publication, SBOM, provenance, Cosign signing and the
+GitHub release all run only after the complete test job succeeds. See
 [Docker and releases](docs/operations/docker.md) for immutable-digest verification and retry
 behaviour.
 
