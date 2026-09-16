@@ -18,7 +18,7 @@ from app.core.errors import (
     app_error_handler,
 )
 from app.main import create_app
-from tests.conftest import TOKEN, client
+from tests.conftest import PROBLEM_MEMBERS, TOKEN, client
 
 
 def _request() -> Request:
@@ -157,7 +157,7 @@ def test_app_error_keeps_the_context_it_was_given():
 
 def test_to_response_always_carries_context_as_the_last_member():
     body = json.loads(AppError("test").to_response(_request()).body)
-    assert set(body) == {"code", "title", "status", "detail", "instance", "origin", "context"}
+    assert set(body) == PROBLEM_MEMBERS
     assert body["context"] == {}
 
 
@@ -264,7 +264,7 @@ def test_a_legitimate_validation_message_survives_the_bound():
 def _problem(response: object) -> dict[str, object]:
     body = response.json()  # pyright: ignore[reportAttributeAccessIssue]
     assert response.headers["content-type"].startswith("application/problem+json")  # pyright: ignore[reportAttributeAccessIssue]
-    assert set(body) == {"code", "title", "status", "detail", "instance", "origin", "context"}
+    assert set(body) == PROBLEM_MEMBERS
     return body
 
 

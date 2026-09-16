@@ -22,6 +22,7 @@ from app import deps
 from app.core.config import DEV_DEFAULT_TOKEN, Settings
 from app.core.constants import API_TOKEN_HEADER, INLINE_TEMPLATE_FILENAME
 from app.main import app, create_app
+from app.models import Problem
 from app.render.renderer import RenderResult, TypstRenderer
 
 # Template and output are addressed from the end of typst's argv, so a wrapper prefix cannot move
@@ -33,6 +34,10 @@ _ARGV_OUTPUT = -1
 # header or a rotated dev default needed a grep across files that imported neither constant —
 # exactly the drift API_TOKEN_HEADER exists to prevent.
 TOKEN = {API_TOKEN_HEADER: DEV_DEFAULT_TOKEN}
+
+# Read from the model that declares the shape rather than transcribed. Spelled out per assertion, a
+# new problem member meant editing four places, one of which guards the published OpenAPI contract.
+PROBLEM_MEMBERS = set(Problem.model_fields)
 
 # One client over the module-level app, shared the way the app itself already is. A test that needs
 # a differently configured app builds its own through `configured_app`/`configured_client`; one that

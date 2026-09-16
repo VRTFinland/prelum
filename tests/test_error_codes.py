@@ -35,6 +35,7 @@ from app.core.errors import (
     UnsupportedFormatError,
     error_codes,
 )
+from tests.conftest import PROBLEM_MEMBERS
 
 
 def _error_classes() -> list[type[AppError]]:
@@ -140,7 +141,7 @@ _CONTEXT_CONTRACT: list[tuple[AppError, frozenset[str]]] = [
     (ServiceUnavailableError("bad"), frozenset()),
 ]
 
-_STANDARD_MEMBERS = {"code", "origin", "title", "status", "detail", "instance", "context"}
+_STANDARD_MEMBERS = PROBLEM_MEMBERS
 
 
 @pytest.mark.parametrize(("error", "keys"), _CONTEXT_CONTRACT, ids=lambda item: getattr(item, "code", None))
