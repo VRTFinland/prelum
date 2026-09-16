@@ -39,7 +39,7 @@ from app.models import (
     RenderRequest,
     SvgOutput,
 )
-from app.render.renderer import FORMAT_MAP, TypstRenderer, _ProjectLayout
+from app.render.renderer import FORMAT_MAP, TypstRenderer, _OutputPlan, _ProjectLayout, resource_limit_args
 
 _TYPST_ARG_TEMPLATE = -2
 _TYPST_ARG_OUTPUT = -1
@@ -74,6 +74,11 @@ def _layout(tmp_path: Path) -> _ProjectLayout:
         project_root=tmp_path,
         bound_template=tmp_path / "template.typ",
     )
+
+
+def _plan(tmp_path: Path, output: RenderOutput | None = None) -> _OutputPlan:
+    """The compile plan a render would have built, for the tests that drive _run_typst directly."""
+    return TypstRenderer(Settings())._output_plan(_layout(tmp_path), output or PdfOutput())
 
 
 class FakeProc:
@@ -428,8 +433,8 @@ async def test_oversized_output_is_rejected_before_it_is_read(
     make_renderer: Callable[..., TypstRenderer],
 ):
     renderer = make_renderer(max_output_bytes=1024)
-    output = tmp_path / "oversized.pdf"
-    output.write_bytes(b"x" * 1025)
+    plan = _plan(tmp_path)
+    plan.typst_output.write_bytes(b"x" * 1025)
 
     def fail_on_read(_path: Path) -> bytes:
         raise AssertionError("oversized output was read into memory")
@@ -437,7 +442,45 @@ async def test_oversized_output_is_rejected_before_it_is_read(
     monkeypatch.setattr(Path, "read_bytes", fail_on_read)
 
     with pytest.raises(OutputTooLargeError, match="1025"):
-        await renderer._finalise_output(output, PdfOutput(), "pdf", "application/pdf")
+        await renderer._finalise_output(plan)
+
+
+@pytest.mark.asyncio
+async def test_the_temporary_project_is_removed_after_a_successful_render(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    make_renderer: Callable[..., TypstRenderer],
+):
+    """Cleanup is explicit code now, not TemporaryDirectory's __exit__, so it is pinned here."""
+    renderer = make_renderer(temp_root=tmp_path)
+
+    async def fake_run(*args, **_kwargs):
+        Path(args[_TYPST_ARG_OUTPUT]).write_bytes(b"%PDF-fake")
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    _ = await renderer.render(_job(files={"lib/x.typ": RenderFile(encoding="text", content="#let x = 1")}))
+
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_the_temporary_project_is_removed_when_the_render_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    make_renderer: Callable[..., TypstRenderer],
+):
+    """A compile failure must not leak the project tree: the tree is where caller source lives."""
+    renderer = make_renderer(temp_root=tmp_path)
+
+    async def fake_run(*_args, **_kwargs):
+        return FakeProc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
+    with pytest.raises(RenderError, match="did not produce output"):
+        _ = await renderer.render(_job())
+
+    assert list(tmp_path.iterdir()) == []
 
 
 @pytest.mark.asyncio
@@ -481,7 +524,7 @@ async def test_run_typst_kills_process_on_cancel(
         return proc
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    task = asyncio.create_task(renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf"))
+    task = asyncio.create_task(renderer._run_typst(_layout(tmp_path), _plan(tmp_path)))
     await asyncio.sleep(0.01)
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
@@ -513,7 +556,7 @@ async def test_run_typst_times_out(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(RenderTimeoutError):
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
 
 @pytest.mark.asyncio
@@ -535,7 +578,7 @@ async def test_run_typst_classifies_compile_failure_as_caller_error(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(InlineTemplateError) as exc_info:
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
     assert exc_info.value.status < 500
     assert process_options["stdout"] is asyncio.subprocess.DEVNULL
     assert process_options["stderr"] is asyncio.subprocess.DEVNULL
@@ -554,7 +597,7 @@ async def test_run_typst_requires_an_output(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(RenderError, match="did not produce output"):
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
 
 def test_typst_env_blocks_proxies_by_default(renderer: TypstRenderer):
@@ -882,7 +925,7 @@ def test_image_archive_rejects_final_zip_bytes_over_the_output_limit(
         (tmp_path / f"output-{page}.svg").write_bytes(b"")
 
     with pytest.raises(OutputTooLargeError):
-        renderer._create_archive(output_template, tmp_path / "output.zip", "svg")
+        renderer._create_archive(renderer._collect_page_outputs(output_template), tmp_path / "output.zip", "svg")
 
 
 def test_image_archive_requires_at_least_one_page_file(
@@ -892,7 +935,7 @@ def test_image_archive_requires_at_least_one_page_file(
     renderer = make_renderer()
 
     with pytest.raises(RenderError, match="did not produce page output"):
-        renderer._create_archive(tmp_path / "output-{p}.svg", tmp_path / "output.zip", "svg")
+        renderer._create_archive([], tmp_path / "output.zip", "svg")
 
 
 def test_image_archive_rejects_a_matching_symlink(
@@ -946,7 +989,7 @@ async def test_explicit_missing_image_page_is_a_caller_compile_failure(
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
 
     with pytest.raises(InlineTemplateError):
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.svg", SvgOutput(page=99))
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path, SvgOutput(page=99)))
 
 
 @pytest.mark.integration
@@ -1111,7 +1154,7 @@ async def test_run_typst_classifies_a_crashing_signal_as_infrastructure(
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
     with pytest.raises(RenderError) as exc_info:
-        await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+        await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
     assert exc_info.value.is_server_fault
 
 
@@ -1136,7 +1179,7 @@ async def _run_under_signal(
         return KilledProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+    await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
 
 @pytest.mark.asyncio
@@ -1206,7 +1249,7 @@ def test_resource_limit_args_are_empty_when_no_limit_is_configured(
     make_renderer: Callable[..., TypstRenderer],
 ):
     """The wrapper is Linux-only, so it stays off until a deployment asks for it."""
-    assert make_renderer()._resource_limit_args() == ()
+    assert resource_limit_args(make_renderer().settings) == ()
 
 
 def test_resource_limit_args_attach_the_value_to_its_flag(
@@ -1223,7 +1266,7 @@ def test_resource_limit_args_attach_the_value_to_its_flag(
     wrapper = _with_prlimit(monkeypatch)
     renderer = make_renderer(max_render_memory_bytes=256 * 1024 * 1024)
 
-    assert renderer._resource_limit_args() == (wrapper, "--data=268435456", "--")
+    assert resource_limit_args(renderer.settings) == (wrapper, "--data=268435456", "--")
 
 
 @pytest.mark.asyncio
@@ -1243,8 +1286,9 @@ async def test_run_typst_prefixes_the_wrapper_without_disturbing_the_argv_tail(
         return FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    output_path = tmp_path / "out.pdf"
-    await renderer._run_typst(_layout(tmp_path), output_path)
+    plan = _plan(tmp_path)
+    output_path = plan.typst_output
+    await renderer._run_typst(_layout(tmp_path), plan)
 
     args = cast(tuple[str, ...], captured["args"])
     assert args[:3] == (wrapper, "--data=268435456", "--")
@@ -1269,7 +1313,7 @@ async def test_run_typst_invokes_typst_directly_when_no_limit_is_configured(
         return FakeProc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_run)
-    await renderer._run_typst(_layout(tmp_path), tmp_path / "out.pdf")
+    await renderer._run_typst(_layout(tmp_path), _plan(tmp_path))
 
     args = cast(tuple[str, ...], captured["args"])
     assert args[0] == str(renderer.settings.cli_path)

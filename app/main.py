@@ -35,6 +35,7 @@ from app.core.errors import (
 from app.core.logging import bind_request_context, clear_request_context, setup_logging
 from app.core.sentry import setup_sentry
 from app.deps import get_settings
+from app.render.renderer import resource_limit_args
 
 
 def _declared_size(request: Request) -> int | None:
@@ -165,22 +166,16 @@ def _verify_render_memory_limit(settings: Settings) -> None:
     limit answers 422 to everyone and pages nobody. One fork at startup converts all of it into a
     loud boot failure.
 
-    The probe runs the real wrapper argv against the configured Typst binary, so it also catches a
-    cli_path that is missing or not executable, which is the same silent-422 failure by another
-    route.
+    The probe forks the renderer's own wrapper prefix — not a copy of it — against the configured
+    Typst binary, so it also catches a cli_path that is missing or not executable, which is the same
+    silent-422 failure by another route.
 
     :raises RuntimeError: If the probe does not exit cleanly.
     """
     if settings.max_render_memory_bytes is None:
         return
 
-    argv = [
-        str(constants.PRLIMIT_PATH),
-        f"--data={settings.max_render_memory_bytes}",
-        "--",
-        str(settings.cli_path),
-        "--version",
-    ]
+    argv = [*resource_limit_args(settings), str(settings.cli_path), "--version"]
     try:
         probe = subprocess.run(argv, capture_output=True, check=False, timeout=_PROBE_TIMEOUT_SECS)  # noqa: S603
     except (OSError, subprocess.SubprocessError) as exc:
