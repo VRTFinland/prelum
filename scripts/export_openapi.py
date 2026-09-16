@@ -1,17 +1,14 @@
-import json
 from pathlib import Path
 
 from app.main import create_app
+from scripts._artefacts import API_DOCS, write_json_artefact
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DESTINATION = ROOT / "docs" / "api" / "openapi.json"
+DEFAULT_DESTINATION = API_DOCS / "openapi.json"
 
 
 def export_openapi(destination: Path = DEFAULT_DESTINATION) -> None:
     """Write the application's generated OpenAPI schema for the static documentation site."""
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    schema = create_app().openapi()
-    _ = destination.write_text(f"{json.dumps(schema, indent=2, sort_keys=True)}\n", encoding="utf-8")
+    write_json_artefact(create_app().openapi(), destination)
 
 
 if __name__ == "__main__":

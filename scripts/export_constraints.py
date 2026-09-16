@@ -1,10 +1,9 @@
-import json
 from pathlib import Path
 
 from app.core.constraints import files_key_rules
+from scripts._artefacts import API_DOCS, write_json_artefact
 
-ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DESTINATION = ROOT / "docs" / "api" / "files-key-rules.json"
+DEFAULT_DESTINATION = API_DOCS / "files-key-rules.json"
 
 
 def export_constraints(destination: Path = DEFAULT_DESTINATION) -> None:
@@ -15,9 +14,7 @@ def export_constraints(destination: Path = DEFAULT_DESTINATION) -> None:
     publishing defaults here would invite the caller to hardcode them again, which is the duplication
     this artefact exists to remove.
     """
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    document = json.dumps(files_key_rules(), indent=2, sort_keys=True)
-    _ = destination.write_text(f"{document}\n", encoding="utf-8")
+    write_json_artefact(files_key_rules(), destination)
 
 
 if __name__ == "__main__":
