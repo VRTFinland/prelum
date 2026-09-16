@@ -9,7 +9,9 @@ from pydantic_core import PydanticCustomError
 
 from app.core.errors import Origin
 
-type JSONValue = str | int | float | bool | list[JSONValue] | dict[str, JSONValue] | Mapping[str, JSONValue] | None
+# Mapping covers dict, so the concrete type is not spelled again; a RenderJob carries the
+# request's data as the Mapping the model validated it into.
+type JSONValue = str | int | float | bool | list[JSONValue] | Mapping[str, JSONValue] | None
 
 
 class OutputFormat(StrEnum):
