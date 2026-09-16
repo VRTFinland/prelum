@@ -7,45 +7,25 @@ request does not leak the permit it was waiting for.
 """
 
 import asyncio
-from collections.abc import Iterator
+from collections.abc import Callable
 
 import httpx2 as httpx
 import pytest
+from fastapi import FastAPI
 
 from app import deps
 from app.core.config import Settings
 from app.core.errors import Origin, ServiceOverloadedError
-from app.main import create_app
 from app.render.renderer import RenderResult
+from tests.conftest import TOKEN
 
-TOKEN = {"X-Prelum-Api-Token": "dev-only-insecure-token"}
 SOURCE = '#text("hi")'
 
 
-def _result() -> RenderResult:
-    return RenderResult(bytes=b"%PDF-1.4 fake", content_type="application/pdf", filename="test.pdf")
-
-
-@pytest.fixture(autouse=True)
-def clear_settings_cache() -> Iterator[None]:
-    deps.get_settings.cache_clear()
-    deps.get_render_semaphore.cache_clear()
-    deps.get_renderer.cache_clear()
-    yield
-    deps.get_settings.cache_clear()
-    deps.get_render_semaphore.cache_clear()
-    deps.get_renderer.cache_clear()
-
-
 @pytest.fixture
-def shedding_app(monkeypatch: pytest.MonkeyPatch):
+def shedding_app(configured_app: Callable[..., FastAPI]) -> FastAPI:
     """An app whose queue gives up almost immediately, so the tests do not sleep for seconds."""
-    monkeypatch.setenv("PRELUM_MAX_QUEUE_WAIT_SECS", "0.05")
-    monkeypatch.setenv("PRELUM_RETRY_AFTER_SECS", "5")
-    monkeypatch.setenv("PRELUM_MAX_CONCURRENT_RENDERS", "1")
-    deps.get_settings.cache_clear()
-    deps.get_render_semaphore.cache_clear()
-    return create_app()
+    return configured_app(max_queue_wait_secs="0.05", retry_after_secs="5", max_concurrent_renders="1")
 
 
 async def _post(app, semaphore: asyncio.Semaphore | None = None) -> httpx.Response:
@@ -108,7 +88,11 @@ async def test_retry_after_is_jittered(shedding_app):
 
 
 @pytest.mark.asyncio
-async def test_shedding_does_not_leak_the_permit(shedding_app, monkeypatch: pytest.MonkeyPatch):
+async def test_shedding_does_not_leak_the_permit(
+    shedding_app,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_render_result: RenderResult,
+):
     """
     The failure that would matter most: asyncio.wait_for cancels the pending acquire, and if the
     semaphore granted the permit as the cancellation landed, that permit must be given back. A leak
@@ -125,7 +109,7 @@ async def test_shedding_does_not_leak_the_permit(shedding_app, monkeypatch: pyte
     semaphore.release()
 
     async def fake_render(self, job):
-        return _result()
+        return fake_render_result
 
     monkeypatch.setattr(TypstRenderer, "render", fake_render)
     after = await _post(shedding_app, semaphore)
@@ -135,12 +119,16 @@ async def test_shedding_does_not_leak_the_permit(shedding_app, monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_capacity_within_limits_is_not_shed(shedding_app, monkeypatch: pytest.MonkeyPatch):
+async def test_capacity_within_limits_is_not_shed(
+    shedding_app,
+    monkeypatch: pytest.MonkeyPatch,
+    fake_render_result: RenderResult,
+):
     """Shedding must be the exception; a request that fits is served normally."""
     from app.render.renderer import TypstRenderer
 
     async def fake_render(self, job):
-        return _result()
+        return fake_render_result
 
     monkeypatch.setattr(TypstRenderer, "render", fake_render)
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from app import deps
@@ -34,7 +35,8 @@ _ARGV_OUTPUT = -1
 TOKEN = {API_TOKEN_HEADER: DEV_DEFAULT_TOKEN}
 
 # One client over the module-level app, shared the way the app itself already is. A test that needs
-# a differently configured app, or lifespan events, builds its own — see `configured_client`.
+# a differently configured app builds its own through `configured_app`/`configured_client`; one that
+# needs startup and shutdown to have run uses `lifespan_client`.
 client = TestClient(app)
 
 
@@ -52,23 +54,54 @@ def _clear_dependency_caches() -> None:
 
 
 @pytest.fixture
-def configured_client(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., TestClient]]:
+def reset_dependency_caches() -> Iterator[None]:
     """
-    A client over an app built from the given PRELUM_* environment, e.g. `max_inline_files="7"`.
+    Clear the cached dependencies around a test that builds its own app.
+
+    Opted into per module with `pytestmark = pytest.mark.usefixtures("reset_dependency_caches")`
+    rather than made autouse, so a test that relies on the shared app's already-built settings is
+    left alone.
+    """
+    _clear_dependency_caches()
+    yield
+    _clear_dependency_caches()
+
+
+@pytest.fixture
+def lifespan_client() -> Iterator[TestClient]:
+    """A client that runs the app's startup and shutdown, for the tests that need them to have run."""
+    with TestClient(app) as running_client:
+        yield running_client
+
+
+@pytest.fixture
+def configured_app(monkeypatch: pytest.MonkeyPatch) -> Iterator[Callable[..., FastAPI]]:
+    """
+    An app built from the given PRELUM_* environment, e.g. `max_inline_files="7"`.
 
     Settings is @cache'd, so an app is only honest about new environment once the caches are
     cleared: before, so this app reads the new values, and after, so the next test does not. Done
     here rather than in a per-test try/finally, where one missed `finally` poisons unrelated tests.
     """
 
-    def build(**environment: str) -> TestClient:
+    def build(**environment: str) -> FastAPI:
         for name, value in environment.items():
             monkeypatch.setenv(f"PRELUM_{name.upper()}", value)
         _clear_dependency_caches()
-        return TestClient(create_app())
+        return create_app()
 
     yield build
     _clear_dependency_caches()
+
+
+@pytest.fixture
+def configured_client(configured_app: Callable[..., FastAPI]) -> Callable[..., TestClient]:
+    """A client over `configured_app`, for the tests that drive it over HTTP rather than as an app."""
+
+    def build(**environment: str) -> TestClient:
+        return TestClient(configured_app(**environment))
+
+    return build
 
 
 @pytest.fixture

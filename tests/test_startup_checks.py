@@ -12,16 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from app.core import config, constants
+from app.core import constants
 from app.main import create_app
 
-
-@pytest.fixture(autouse=True)
-def _uncached_settings():
-    """get_settings is @cache'd, and these tests construct several different configurations."""
-    config.get_settings.cache_clear()
-    yield
-    config.get_settings.cache_clear()
+# These tests construct several different configurations, and the dependencies are @cache'd.
+pytestmark = pytest.mark.usefixtures("reset_dependency_caches")
 
 
 def test_an_unconfigured_limit_probes_nothing(monkeypatch: pytest.MonkeyPatch):
