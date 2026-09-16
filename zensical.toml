@@ -1,6 +1,6 @@
 [project]
 site_name = "Prelum"
-site_url = "https://vrtfinland.github.io/prelum/"
+site_url = "https://prelum.gisgro.io/"
 site_description = "A small HTTP service for rendering caller-supplied Typst projects"
 repo_url = "https://github.com/VRTFinland/prelum"
 repo_name = "Source code"
