@@ -153,7 +153,7 @@ async def constraints(
     taken and no subprocess runs, so it cannot be shed and cannot fail on caller input.
 
     """
-    return ConstraintsResponse.model_validate(build_constraints(settings))
+    return build_constraints(settings)
 
 
 @router.post("/v1/render", response_class=Response, responses=_RENDER_RESPONSES)

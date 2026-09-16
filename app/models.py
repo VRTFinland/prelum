@@ -2,7 +2,7 @@ import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, ClassVar, Literal, LiteralString, NoReturn, cast, override
+from typing import Annotated, Any, ClassVar, Literal, LiteralString, NoReturn, cast, override
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
@@ -78,6 +78,26 @@ class Problem(BaseModel):
     context: dict[str, object]
 
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+
+class PublishedDocument(BaseModel):
+    """
+    A document Prelum publishes both over HTTP and as a static artefact under docs/api/.
+
+    Exists so the two are the same document rather than two renderings of it: the endpoint and the
+    exporter both go through `published()`, and neither restates the shape the subclass declares.
+    """
+
+    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
+
+    def published(self) -> dict[str, Any]:
+        """
+        The document as a caller receives it: JSON-ready, with absent optional fields omitted.
+
+        exclude_none matches `response_model_exclude_none` on the endpoint, so an accepted
+        conformance vector carries no rejection fields in the artefact either.
+        """
+        return self.model_dump(mode="json", exclude_none=True)
 
 
 class ConstraintSetRule(BaseModel):
@@ -188,7 +208,7 @@ class PageSelectionRules(BaseModel):
     model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
-class OutputRulesDocument(BaseModel):
+class OutputRulesDocument(PublishedDocument):
     """The deployment-independent output-option contract, also exported as output-rules.json."""
 
     output_rules_version: int
@@ -200,11 +220,14 @@ class OutputRulesDocument(BaseModel):
     rules: list[OutputRule]
     conformance_vectors: list[OutputConformanceVector]
 
-    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
+class FilesKeyRules(PublishedDocument):
+    """
+    The deployment-independent files-key contract, also exported as files-key-rules.json.
 
-class ConstraintsResponse(BaseModel):
-    """The complete client contract returned by ``GET /v1/constraints``."""
+    Everything here is a property of the code rather than of the deployment, which is what makes it
+    safe to write to a static file. The limits an operator can change arrive with the subclass.
+    """
 
     rules_version: int
     key_pattern: str
@@ -219,14 +242,20 @@ class ConstraintsResponse(BaseModel):
     case_sensitivity: str
     set_rules: list[ConstraintSetRule]
     conformance_vectors: list[ConstraintConformanceVector]
+
+
+# Inherits the files-key rules rather than nesting them, so one fetch answers a caller's whole
+# pre-dispatch contract without it having to reach into a sub-object for the half that is static.
+# The docstring below is published as this schema's description, so it says only what a caller needs.
+class ConstraintsResponse(FilesKeyRules):
+    """The complete client contract returned by ``GET /v1/constraints``."""
+
     limits: ConstraintLimits
     # Nested rather than merged into this document's own fields, and carrying its own version
     # counter: the two rule sets change at different rates, so a shared `rules_version` would send
     # a caller back through the key rules because a PDF standard was added. One fetch still answers
     # both, which merging was the only other way to achieve.
     output_rules: OutputRulesDocument
-
-    model_config: ClassVar[ConfigDict] = _STRICT_OPEN_SCHEMA
 
 
 # Named so the published document can list the archive formats without a second spelling of "zip".

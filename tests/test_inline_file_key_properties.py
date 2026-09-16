@@ -357,7 +357,7 @@ def test_a_key_at_the_length_limit_is_actually_written():
 # immutable, so rebuilding it for each of the 7,000 cases these two properties run bought nothing —
 # it is cheap enough not to show in the runtime, which Hypothesis itself dominates, so this is for
 # clarity rather than speed. The mirror below still reads nothing but published data fields.
-_PUBLISHED_RULES: dict[str, Any] = files_key_rules()
+_PUBLISHED_RULES: dict[str, Any] = files_key_rules().published()
 _PUBLISHED_SEGMENT_CHARACTER = re.compile(_PUBLISHED_RULES["segment_character_class"])
 
 

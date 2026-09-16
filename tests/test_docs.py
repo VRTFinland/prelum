@@ -125,7 +125,7 @@ def test_constraints_export_publishes_the_rules_without_deployment_configuration
     export_constraints(destination)
 
     document = json.loads(destination.read_text(encoding="utf-8"))
-    assert document == files_key_rules()
+    assert document == files_key_rules().published()
     assert "limits" not in document, "the static artefact must not imply a deployment's limits"
     assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
 
@@ -137,7 +137,7 @@ def test_output_rules_export_publishes_the_same_document_the_endpoint_nests(tmp_
     export_output_rules(destination)
 
     document = json.loads(destination.read_text(encoding="utf-8"))
-    assert document == output_rules()
+    assert document == output_rules().published()
     assert "limits" not in document, "the output rules are a property of the code, not of a deployment"
     assert document["conformance_vectors"], "an artefact without vectors cannot be diffed against"
 

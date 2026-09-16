@@ -11,6 +11,13 @@ from typing import Any
 
 from app.core.config import Settings
 from app.core.output_rules import output_rules
+from app.models import (
+    ConstraintConformanceVector,
+    ConstraintLimits,
+    ConstraintSetRule,
+    ConstraintsResponse,
+    FilesKeyRules,
+)
 from app.render.templates import (
     INLINE_FILE_KEY_PATTERN,
     MAX_INLINE_FILE_KEYS,
@@ -109,17 +116,23 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
 ]
 
 
-def files_key_rules() -> dict[str, Any]:
+# Validated into their models once at import, for the reason output_rules.py states: the tables stay
+# literal data, and a wrong key or type in one fails the import rather than the first request.
+_SET_RULE_MODELS = [ConstraintSetRule.model_validate(rule) for rule in SET_RULES]
+_VECTOR_MODELS = [ConstraintConformanceVector.model_validate(vector) for vector in CONFORMANCE_VECTORS]
+
+
+def files_key_rules() -> FilesKeyRules:
     """
     Build the deployment-independent half of the published document.
 
     Everything here is a property of the code rather than of the deployment, so it is safe to write
     to a static file. The limits an operator can change are added by ``build_constraints``.
     """
-    return {
-        "rules_version": RULES_VERSION,
-        "key_pattern": INLINE_FILE_KEY_PATTERN,
-        "key_pattern_flavour": "pcre",
+    return FilesKeyRules(
+        rules_version=RULES_VERSION,
+        key_pattern=INLINE_FILE_KEY_PATTERN,
+        key_pattern_flavour="pcre",
         # key_pattern needs lookahead, which RE2 — Go's regexp and Rust's regex — does not have, so
         # it does not compile there at all. Every rule the expression carries is therefore also
         # published on its own, and the fields below are the whole per-key contract: the class, the
@@ -129,28 +142,28 @@ def files_key_rules() -> dict[str, Any]:
         # tests/test_inline_file_key_properties.py mirrors the validator from these fields alone, so
         # a rule that reaches templates.py without reaching this dict fails there rather than in a
         # caller's deployment.
-        "segment_character_class": SAFE_SEGMENT_CHARACTER_CLASS,
+        segment_character_class=SAFE_SEGMENT_CHARACTER_CLASS,
         # A minimum of one is a rule, not a truism: keys are mirrored by splitting on '/', and an
         # empty segment is what 'lib//label.typ', 'lib/' and '/lib/x.typ' each produce. A mirror
         # that only checks "every character is in the class" passes all three vacuously.
-        "min_segment_length": 1,
-        "max_segment_length": MAX_KEY_SEGMENT_LENGTH,
+        min_segment_length=1,
+        max_segment_length=MAX_KEY_SEGMENT_LENGTH,
         # The one per-key rule with no parameter to publish: a segment of nothing but dots — '.',
         # '..', '...' — is rejected whatever its length. A flag rather than prose, so a mirror built
         # from data alone can see it; relaxing the rule would flip this rather than silently drop it.
-        "segments_may_not_be_only_dots": True,
-        "min_key_length": 1,
+        segments_may_not_be_only_dots=True,
+        min_key_length=1,
         # Bounds the joined key, not a segment: what reaches the filesystem is the absolute project
         # root plus the key, and the room reserved for that root is what this leaves.
-        "max_key_length": MAX_KEY_LENGTH,
-        "max_keys": MAX_INLINE_FILE_KEYS,
-        "case_sensitivity": "keys are compared case-folded",
-        "set_rules": SET_RULES,
-        "conformance_vectors": CONFORMANCE_VECTORS,
-    }
+        max_key_length=MAX_KEY_LENGTH,
+        max_keys=MAX_INLINE_FILE_KEYS,
+        case_sensitivity="keys are compared case-folded",
+        set_rules=_SET_RULE_MODELS,
+        conformance_vectors=_VECTOR_MODELS,
+    )
 
 
-def build_constraints(settings: Settings) -> dict[str, Any]:
+def build_constraints(settings: Settings) -> ConstraintsResponse:
     """
     Build the full document served by ``GET /v1/constraints``.
 
@@ -161,17 +174,20 @@ def build_constraints(settings: Settings) -> dict[str, Any]:
     The output rules are nested whole rather than merged, so their version counter stays their own;
     everything a caller needs to validate a request before dispatch then arrives in one fetch.
     """
-    return {
-        **files_key_rules(),
-        "output_rules": output_rules(),
-        "limits": {
-            "effective_max_files": min(MAX_INLINE_FILE_KEYS, settings.max_inline_files),
-            "max_inline_files": settings.max_inline_files,
-            "max_inline_file_bytes": settings.max_inline_file_bytes,
-            "max_template_source_bytes": settings.max_template_source_bytes,
-            "max_string_bytes": settings.max_string_bytes,
-            "max_request_body_bytes": settings.max_request_body_bytes,
-            "max_output_bytes": settings.max_output_bytes,
-            "max_output_files": settings.max_output_files,
-        },
-    }
+    # The static half is declared once, in files_key_rules; this widens it rather than restating
+    # any of its fields. vars() hands over the already-validated values, nested models included,
+    # so nothing is serialised and re-parsed on the way.
+    return ConstraintsResponse(
+        **vars(files_key_rules()),
+        output_rules=output_rules(),
+        limits=ConstraintLimits(
+            effective_max_files=min(MAX_INLINE_FILE_KEYS, settings.max_inline_files),
+            max_inline_files=settings.max_inline_files,
+            max_inline_file_bytes=settings.max_inline_file_bytes,
+            max_template_source_bytes=settings.max_template_source_bytes,
+            max_string_bytes=settings.max_string_bytes,
+            max_request_body_bytes=settings.max_request_body_bytes,
+            max_output_bytes=settings.max_output_bytes,
+            max_output_files=settings.max_output_files,
+        ),
+    )

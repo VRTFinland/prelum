@@ -78,7 +78,7 @@ def test_declared_exemptions_name_real_rules():
 
 
 def test_document_states_the_enforced_limits():
-    document = files_key_rules()
+    document = files_key_rules().published()
 
     assert document["rules_version"] == RULES_VERSION
     assert document["max_segment_length"] == MAX_KEY_SEGMENT_LENGTH
@@ -96,7 +96,7 @@ def test_every_per_key_rule_is_published_without_the_pattern():
     is also published as data, which is what this asserts — the pattern is a fast path for the
     engines that accept it, never the sole statement of a rule.
     """
-    document = files_key_rules()
+    document = files_key_rules().published()
 
     assert {
         "segment_character_class",
@@ -110,12 +110,12 @@ def test_every_per_key_rule_is_published_without_the_pattern():
 
 def test_no_name_is_published_as_reserved():
     """The entry point is protected by being unspellable, so there is no reserved name to publish."""
-    assert "reserved_first_segment" not in files_key_rules()
+    assert "reserved_first_segment" not in files_key_rules().published()
 
 
 def test_static_half_carries_no_deployment_configuration():
     """Limits belong to the endpoint: a default in the artefact invites the caller to hardcode it."""
-    document = files_key_rules()
+    document = files_key_rules().published()
 
     assert "limits" not in document
     assert not {"font_path", "local_package_path", "cli_path", "environment"} & document.keys()

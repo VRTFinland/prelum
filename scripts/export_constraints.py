@@ -14,7 +14,7 @@ def export_constraints(destination: Path = DEFAULT_DESTINATION) -> None:
     publishing defaults here would invite the caller to hardcode them again, which is the duplication
     this artefact exists to remove.
     """
-    write_json_artefact(files_key_rules(), destination)
+    write_json_artefact(files_key_rules().published(), destination)
 
 
 if __name__ == "__main__":

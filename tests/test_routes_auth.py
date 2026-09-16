@@ -194,7 +194,7 @@ def test_constraints_publishes_the_output_rules_under_their_own_version():
     document = client.get("/v1/constraints", headers=TOKEN).json()
 
     output_rules = document["output_rules"]
-    assert output_rules == published_output_rules()
+    assert output_rules == published_output_rules().published()
     assert "rules_version" not in output_rules
     assert output_rules["output_rules_version"] >= 1
     # The tables a mirror cannot derive, and the grammar behind `pages`.

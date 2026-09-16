@@ -14,7 +14,7 @@ def export_output_rules(destination: Path = DEFAULT_DESTINATION) -> None:
     withhold: a caller needs nothing from a running deployment to validate an `output` object, and
     the vectors are what lets it prove its validator agrees with ours rather than transcribing it.
     """
-    write_json_artefact(output_rules(), destination)
+    write_json_artefact(output_rules().published(), destination)
 
 
 if __name__ == "__main__":
