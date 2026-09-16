@@ -1,11 +1,28 @@
 """Shared constants for the prelum application."""
 
+import tomllib
 from pathlib import Path
 
-# Spelled here as well as in pyproject.toml because importlib.metadata cannot answer for a virtual
-# uv project (`package = false`, no [build-system]), and the runtime image carries no pyproject.toml
-# to read instead. Bump both; the OpenAPI test fails if they drift.
-VERSION = "1.2.0"
+PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
+
+
+def _project_version() -> str:
+    """
+    Read the version from pyproject.toml, which is the only file that spells it.
+
+    importlib.metadata cannot answer for a virtual uv project (`package = false`, no
+    [build-system]), so the final image carries pyproject.toml beside app/ for this to read. Spelling
+    the version a second time here instead is what an earlier release did, and a bump that updated
+    one spelling and not the other was caught only by a test. Reading it at import means a build
+    that dropped the file fails on startup rather than serving a wrong version in every response.
+    """
+    try:
+        return str(tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))["project"]["version"])
+    except (OSError, KeyError, tomllib.TOMLDecodeError) as error:
+        raise RuntimeError(f"Cannot read the project version from {PYPROJECT}") from error
+
+
+VERSION = _project_version()
 
 # Safe characters allowed in filenames and template names.
 # Includes alphanumeric characters, dot, hyphen, and underscore.

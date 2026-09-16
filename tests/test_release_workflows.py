@@ -1,9 +1,16 @@
+import tomllib
 from pathlib import Path
+
+import pytest
+
+from app.core import constants
 
 ROOT = Path(__file__).resolve().parent.parent
 BUILD_WORKFLOW = ROOT / ".github" / "workflows" / "build.yml"
 RELEASE_WORKFLOW = ROOT / ".github" / "workflows" / "release.yml"
 DOCS_WORKFLOW = ROOT / ".github" / "workflows" / "docs.yml"
+DOCKERFILE = ROOT / "Dockerfile"
+PYPROJECT = ROOT / "pyproject.toml"
 
 
 def test_build_workflow_does_not_publish_direct_tag_pushes():
@@ -49,3 +56,32 @@ def test_the_release_job_can_resolve_the_repository_without_a_checkout():
     workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "GH_REPO: ${{ github.repository }}" in workflow
+
+
+def test_the_image_carries_the_file_the_version_is_read_from():
+    """
+    The final stage copies app/ and the virtualenv, and nothing else, by design.
+
+    app/core/constants.py reads the version from pyproject.toml at import, so dropping this one
+    COPY would take the service down on startup rather than degrade quietly — but it would take it
+    down in production, having passed every test. Pin the copy here instead.
+    """
+    dockerfile = DOCKERFILE.read_text(encoding="utf-8")
+
+    assert "COPY --from=builder /prelum/pyproject.toml /prelum/pyproject.toml" in dockerfile
+
+
+def test_the_reported_version_is_the_one_pyproject_spells():
+    """One file spells the version; `uv version X.Y.Z` is the only thing that needs to change it."""
+    pyproject = tomllib.loads(PYPROJECT.read_text(encoding="utf-8"))
+
+    assert pyproject["project"]["version"] == constants.VERSION
+
+
+def test_a_version_that_cannot_be_read_fails_with_the_path_that_failed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """A traceback naming the missing file beats a service reporting a plausible wrong version."""
+    missing = tmp_path / "pyproject.toml"
+    monkeypatch.setattr(constants, "PYPROJECT", missing)
+
+    with pytest.raises(RuntimeError, match=str(missing)):
+        _ = constants._project_version()

@@ -60,6 +60,10 @@ RUN --mount=type=cache,id=apt-lists,target=/var/lib/apt/lists/,sharing=locked \
 COPY --from=typst /bin/typst /usr/local/bin/typst
 COPY --from=builder /venv /venv
 COPY --from=builder /prelum/app /prelum/app
+# The version the service reports is read from here at import. A virtual uv project has no
+# installed metadata to ask instead, and the alternative — spelling the version a second time in
+# app/core/constants.py — is a bump that can be applied to one file and not the other.
+COPY --from=builder /prelum/pyproject.toml /prelum/pyproject.toml
 
 # The upstream Typst image omits its licence files; Apache-2.0 requires them in distributions.
 # These copies are pinned to the same revision as the binary.

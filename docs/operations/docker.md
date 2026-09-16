@@ -72,10 +72,19 @@ cosign verify \
 
 ## Release process
 
-Maintainers start releases manually from the `release` workflow on `main`. The requested stable
-semantic version must match `pyproject.toml`. The workflow creates the `vX.Y.Z` tag, runs the
-complete test and image publication workflow, and only then creates a GitHub release containing
-the immutable image digest.
+The version is spelled once, in `pyproject.toml`. The image carries that file so the service can
+report its own version, and `uv` keeps the lockfile in step:
+
+```bash
+uv version 1.2.1
+```
+
+Commit the resulting `pyproject.toml` and `uv.lock` to `main` before dispatching the release.
+
+Maintainers then start releases manually from the `release` workflow on `main`, passing the same
+version. It must match `pyproject.toml`. The workflow creates the `vX.Y.Z` tag, runs the complete
+test and image publication workflow, and only then creates a GitHub release containing the
+immutable image digest.
 
 A retry continues a partial release only while its tag still points to the same commit. An existing
 GitHub release is a successful no-op. Image publication and releases remain disabled while the
