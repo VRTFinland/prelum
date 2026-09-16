@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, ClassVar, Literal, LiteralString, NoReturn, cast, override
 
-from pydantic import AfterValidator, BaseModel, ConfigDict, Field, model_validator
+from pydantic import AfterValidator, BaseModel, BeforeValidator, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
 from app.core.errors import Origin
@@ -548,6 +548,25 @@ class SvgOutput(ImageOutput):
     content_type: ClassVar[str] = "image/svg+xml"
 
 
+def _settle_output_format(value: object) -> object:
+    """
+    Default the format and refuse one no model claims, before the union discriminates on it.
+
+    A field validator rather than a validator on RenderRequest: at the model level this ran as a
+    mode="before" pass over the whole body, so raising there abandoned the request's other errors
+    and reported the format's location as the body rather than as `output`. Here the union's own
+    field is the location, and a request that is wrong in several ways still comes back with all
+    of them — which is what lets a caller fix them in one round trip.
+    """
+    if not isinstance(value, dict):
+        return value
+    output = cast(dict[str, object], value)
+    if "format" not in output:
+        return {"format": OutputFormat.pdf, **output}
+    _as_validation_error(lambda: _require_a_known_output_format(output["format"]))
+    return value
+
+
 type RenderOutput = Annotated[PdfOutput | PngOutput | SvgOutput, Field(discriminator="format")]
 
 # Which model validates each `format`, and so which rules apply to it. Both sets are published, so
@@ -610,24 +629,9 @@ class RenderRequest(BaseModel):
     source: str = Field(min_length=1)
     files: dict[str, RenderFile] = Field(default_factory=dict)
     data: JSONValue = Field(default_factory=dict)
-    output: RenderOutput = Field(default_factory=PdfOutput)
+    output: Annotated[RenderOutput, BeforeValidator(_settle_output_format)] = Field(default_factory=PdfOutput)
 
     model_config: ClassVar[ConfigDict] = _STRICT
-
-    @model_validator(mode="before")
-    @classmethod
-    def default_output_format(cls, value: object) -> object:
-        if not isinstance(value, dict):
-            return value
-        output = value.get("output")
-        if not isinstance(output, dict):
-            return value
-        if "format" not in output:
-            return {**value, "output": {"format": OutputFormat.pdf, **output}}
-        # Settled before the discriminated union sees it, so an unknown format is reported as the
-        # published `unsupported_format` rather than as whatever shape Pydantic's tag error takes.
-        _as_validation_error(lambda: _require_a_known_output_format(cast(dict[str, object], output)["format"]))
-        return value
 
     @model_validator(mode="before")
     @classmethod

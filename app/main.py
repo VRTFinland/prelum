@@ -1,7 +1,6 @@
 import os
 import subprocess
 import uuid
-from contextlib import suppress
 from http import HTTPStatus
 from typing import cast
 
@@ -104,10 +103,14 @@ class BodyLimitMiddleware:
             if not refused:
                 await send(message)
 
-        # Suppressed for the route that reads the body itself, without FastAPI's wrapping in the
-        # way; `refused` is what actually decides the answer either way.
-        with suppress(RequestTooLargeError):
+        try:
             await self.app(scope, receive_with_limit, send_unless_refused)
+        except RequestTooLargeError:
+            # Only the refusal above is answered here — the route that reads the body itself, with
+            # FastAPI's wrapping out of the way. Anything else raising this error has its own reason
+            # and its own response to send, and swallowing it would leave the caller with no reply.
+            if not refused:
+                raise
         if refused:
             await app_error_handler(Request(scope), self._too_large(scope))(scope, receive, send)
 

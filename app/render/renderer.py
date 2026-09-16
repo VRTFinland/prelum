@@ -2,7 +2,6 @@ import asyncio
 import base64
 import binascii
 import errno
-import io
 import json
 import os
 import re
@@ -468,8 +467,12 @@ class TypstRenderer:
         self._check_output_size(sum(page_output.size for page_output in outputs))
 
         padding = max(2, len(str(outputs[-1].page)))
-        buffer = io.BytesIO()
-        with zipfile.ZipFile(buffer, mode="w") as archive:
+        # Built on disk rather than in a BytesIO. Only the finished bytes have to be held, and
+        # getvalue() would copy them out of the buffer while the buffer is still alive — two copies
+        # of an archive that may be max_output_bytes, at a time when max_concurrent_renders of them
+        # can be in flight, against a configuration that documents worst-case memory as the one
+        # multiplied by the other.
+        with zipfile.ZipFile(archive_path, mode="w") as archive:
             for page_output in outputs:
                 entry = zipfile.ZipInfo(f"page-{page_output.page:0{padding}d}.{extension}", date_time=_ZIP_TIMESTAMP)
                 entry.compress_type = zipfile.ZIP_DEFLATED
@@ -480,15 +483,10 @@ class TypstRenderer:
                 with archive.open(entry, "w") as target, page_output.path.open("rb") as source:
                     _ = shutil.copyfileobj(source, target)
 
-        # ZipFile.close() has just written the central directory, so the position is the zip's size.
-        # Checked before getvalue() so an oversized archive is refused without a second copy of it.
-        self._check_output_size(buffer.tell())
-        archive_bytes = buffer.getvalue()
-        # The archive only has to reach the HTTP response, so it is built in memory. The on-disk
-        # copy is written solely to give _save_debug_copy a file to copy, and skipped otherwise.
-        if self.settings.debug_output_dir:
-            _ = archive_path.write_bytes(archive_bytes)
-        return archive_bytes
+        # The size of a file that was streamed is not known until it is measured, and measuring it
+        # before reading refuses an oversized archive without ever holding it.
+        self._check_output_size(archive_path.stat().st_size)
+        return archive_path.read_bytes()
 
     def _check_output_size(self, size: int) -> None:
         if size > self.settings.max_output_bytes:

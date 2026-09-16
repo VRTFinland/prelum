@@ -274,12 +274,14 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
     # thing to do; without these, a mirror built from this document would then report a different
     # id from the service for the same object, and nothing would fail.
     #
-    # These six are every adjacent pair an `output` object can break together. The rest are
-    # unobservable, and so carry no claim to check: duplicate_standards with
+    # These seven are every adjacent pair an `output` object can break together, including the one
+    # that spans the two validators: `pages` is validated on the field, so the page-selection rules
+    # all run before validate_pdf_options and the boundary between the two groups is observable.
+    # The rest carry no claim to check because no request reaches them: duplicate_standards with
     # multiple_pdf_a_standards, and multiple_pdf_a_standards with ua_1_with_pdf_a_4, each need a
-    # third standard that max_standards refuses at the field level first; pages_requires_archive
-    # needs `archive` absent where page_with_archive needs it present; and the PDF and image rules
-    # apply to different formats, so their relative order is not an order at all.
+    # third standard that max_standards refuses at the field level first; and pages_requires_archive
+    # needs `archive` absent where page_with_archive needs it present. The image rules govern a
+    # different format from the PDF ones, so their relative order is not an order at all.
     {
         "output": {"format": "pdf", "pages": ",".join(["100"] * 65)},
         "accepted": False,
@@ -315,6 +317,13 @@ CONFORMANCE_VECTORS: list[dict[str, Any]] = [
         "accepted": False,
         "code": "invalid_request",
         "rule": OutputRuleId.ua_1_with_pdf_2_0.value,
+    },
+    # The boundary between the two groups: a reversed range and a duplicated standard together.
+    {
+        "output": {"format": "pdf", "pages": "3-2", "standards": ["a-2b", "a-2b"]},
+        "accepted": False,
+        "code": "invalid_request",
+        "rule": OutputRuleId.page_range_end_precedes_start.value,
     },
     # Field-level rules from here on: the schema states each one, and the rejection carries no rule
     # id because Pydantic's own error type already tells them apart.

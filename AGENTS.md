@@ -137,7 +137,8 @@ The rules below are load-bearing — every one of them exists because breaking i
   `("--data", value)` is not equivalent to `f"--data={value}"`: split, getopt leaves the limit unset, `prlimit`
   execs the number and exits 127 — which the renderer reads as a compile failure and reports as 422. The startup
   probe in `app/main.py` exists to catch exactly that class of silent misconfiguration; do not remove it, and do
-  not rewrite `_resource_limit_args` into the `extend((flag, value))` idiom the output arguments use.
+  not rewrite `resource_limit_args` (module-level in `app/render/renderer.py`, and forked by
+  `app/main.py`'s startup probe) into the `extend((flag, value))` idiom the output arguments use.
 - **Never mirror the request body into an error or log, and decide echoed values per field.** Validation responses
   drop pydantic's `input` and `ctx`. Prose goes through `for_message`, and so does every caller-supplied segment of
   a validation `loc` and of `context.path`, because neither has passed key validation. `context.key` is the deliberate
