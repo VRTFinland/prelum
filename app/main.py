@@ -20,15 +20,13 @@ from app.api.routes import router
 from app.core import constants
 from app.core.config import Settings
 from app.core.errors import (
+    VALIDATION_ERRORS_BY_CODE,
     AppError,
-    InvalidFileDataError,
     InvalidRequestError,
-    InvalidTemplatePathError,
     MethodNotAllowedError,
     NotFoundError,
     RequestTooLargeError,
     ServiceUnavailableError,
-    UnsupportedFormatError,
     app_error_handler,
     for_message,
 )
@@ -283,29 +281,15 @@ def create_app() -> FastAPI:
             {"loc": _bounded_location(error), "msg": _bounded_message(error), "type": error.get("type")}
             for error in errors[:_MAX_PUBLISHED_ERRORS]
         ]
-        classified_errors: dict[str, type[AppError]] = {
-            InvalidTemplatePathError.code: InvalidTemplatePathError,
-            InvalidFileDataError.code: InvalidFileDataError,
-        }
         classified = next(
             (
                 (error, error_class)
                 for error in errors
-                if (error_class := classified_errors.get(cast(str, error.get("type")))) is not None
+                if (error_class := VALIDATION_ERRORS_BY_CODE.get(cast(str, error.get("type")))) is not None
             ),
             None,
         )
         error_class: type[AppError] = InvalidRequestError if classified is None else classified[1]
-        if error_class is InvalidRequestError and any(
-            (error.get("type") == "enum" and cast(tuple[object, ...], error["loc"])[-2:] == ("output", "format"))
-            or (
-                error.get("type") == "union_tag_invalid"
-                and cast(tuple[object, ...], error["loc"])[-1:] == ("output",)
-                and cast(dict[str, object], error.get("ctx", {})).get("discriminator") == "'format'"
-            )
-            for error in errors
-        ):
-            error_class = UnsupportedFormatError
 
         # The one error `detail`, `code` and `rule` all describe. `code` follows the classified
         # files-key error wherever it sits among the errors, so the other two follow it too; with

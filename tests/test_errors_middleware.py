@@ -227,11 +227,11 @@ def test_validation_error_locations_keep_array_indices_as_integers():
 
 def test_validation_messages_are_bounded_too():
     """
-    Pydantic quotes the offending value in some messages, so `msg` mirrors input as surely as `loc`.
+    A validation message quotes the offending value, so `msg` mirrors input as surely as `loc`.
 
-    An invalid discriminator tag is embedded whole: an unbounded one comes back twice, in
-    `context.errors[].msg` and in the `detail` built from it, turning a rejected request into
-    response amplification and putting caller content through every intermediary that logs bodies.
+    An unbounded format tag comes back twice — in `context.errors[].msg` and in the `detail` built
+    from it — turning a rejected request into response amplification and putting caller content
+    through every intermediary that logs bodies.
     """
     marker = "M" * 6000
     response = client.post(
@@ -244,7 +244,7 @@ def test_validation_messages_are_bounded_too():
     assert marker not in response.text
     assert len(response.content) < 1000
 
-    (error,) = [error for error in response.json()["context"]["errors"] if error["type"] == "union_tag_invalid"]
+    (error,) = [error for error in response.json()["context"]["errors"] if error["type"] == "unsupported_format"]
     assert error["msg"].endswith("…")
 
 
@@ -256,7 +256,7 @@ def test_a_legitimate_validation_message_survives_the_bound():
         headers=TOKEN,
     )
 
-    (error,) = [error for error in response.json()["context"]["errors"] if error["type"] == "union_tag_invalid"]
+    (error,) = [error for error in response.json()["context"]["errors"] if error["type"] == "unsupported_format"]
     assert "gif" in error["msg"]
     assert not error["msg"].endswith("…")
 

@@ -35,14 +35,12 @@ output_size_bytes = Histogram(
     buckets=(1024, 10240, 102400, 512000, 1048576, 5242880, 10485760, 52428800),
 )
 
-# Error tracking
+# Error tracking. error_type carries the published AppError `code`, the same value the caller reads
+# in the problem body, so a dashboard built on it survives a class being renamed — which the API
+# contract says is free. The one value that is not a code is "unhandled", for an error the render
+# path did not classify at all.
 render_errors_total = Counter(
     "prelum_render_errors_total",
-    "Total number of render errors by type",
+    "Total number of render errors by published error code",
     ["error_type"],
-)
-
-render_timeouts_total = Counter(
-    "prelum_render_timeouts_total",
-    "Total number of render timeouts",
 )

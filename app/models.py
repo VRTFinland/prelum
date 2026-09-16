@@ -484,22 +484,45 @@ IMAGE_OUTPUT_FORMATS = frozenset(
     output_format for output_format, model in OUTPUT_MODELS.items() if issubclass(model, _ImageOutputBase)
 )
 
+# The wire spellings OUTPUT_MODELS claims, for the check that runs before the discriminated union.
+_OUTPUT_FORMAT_VALUES = frozenset(output_format.value for output_format in OUTPUT_MODELS)
+
 
 def _as_validation_error(check: Callable[[], object]) -> None:
     """
-    Run a key-policy check, re-raising its failure as a Pydantic validation error.
+    Run a caller-fault check, re-raising its failure as a Pydantic validation error.
 
-    Preserves templates.py's caller-fault classification through Pydantic so the HTTP boundary can
-    return the matching published problem code without reimplementing key policy. The error's
-    context rides along in ctx; the handler lifts it out again.
+    Preserves the raiser's classification through Pydantic so the HTTP boundary can return the
+    matching published problem code without reimplementing the rule. The error's context rides
+    along in ctx; the handler lifts it out again. Which classes travel this way is errors.py's
+    VALIDATION_ERRORS, which the handler reads too.
     """
-    from app.core.errors import InvalidFileDataError, InvalidTemplatePathError
+    from app.core.errors import VALIDATION_ERRORS
 
     try:
         _ = check()
-    except (InvalidTemplatePathError, InvalidFileDataError) as exc:
+    except VALIDATION_ERRORS as exc:
         error_type = cast(LiteralString, exc.code)
         raise PydanticCustomError(error_type, "{message}", {"message": str(exc), **exc.context}) from exc
+
+
+def _require_a_known_output_format(value: object) -> None:
+    """
+    Refuse a format no output model claims, naming the offending value at the end of the message.
+
+    Decided here rather than at the HTTP boundary, which used to recover this one fact by matching
+    Pydantic's own error shapes: an `enum` error located under output.format, or a
+    `union_tag_invalid` whose ctx names the discriminator — quotes included. A fourth format, or a
+    Pydantic release that reshaped either, would silently have degraded the answer from
+    `unsupported_format` back to `invalid_request`.
+
+    :raises UnsupportedFormatError: If the format is not one OUTPUT_MODELS claims.
+    """
+    from app.core.errors import UnsupportedFormatError, for_message
+
+    if isinstance(value, OutputFormat) or (isinstance(value, str) and value in _OUTPUT_FORMAT_VALUES):
+        return
+    raise UnsupportedFormatError(f"Unsupported output format: {for_message(str(value))}")
 
 
 class RenderRequest(BaseModel):
@@ -516,9 +539,14 @@ class RenderRequest(BaseModel):
         if not isinstance(value, dict):
             return value
         output = value.get("output")
-        if not isinstance(output, dict) or "format" in output:
+        if not isinstance(output, dict):
             return value
-        return {**value, "output": {"format": OutputFormat.pdf, **output}}
+        if "format" not in output:
+            return {**value, "output": {"format": OutputFormat.pdf, **output}}
+        # Settled before the discriminated union sees it, so an unknown format is reported as the
+        # published `unsupported_format` rather than as whatever shape Pydantic's tag error takes.
+        _as_validation_error(lambda: _require_a_known_output_format(cast(dict[str, object], output)["format"]))
+        return value
 
     @model_validator(mode="before")
     @classmethod
