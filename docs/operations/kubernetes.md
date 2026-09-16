@@ -49,7 +49,7 @@ spec:
         runAsGroup: 10001
       containers:
         - name: prelum
-          image: ghcr.io/vrtfinland/prelum:1.1.0
+          image: ghcr.io/vrtfinland/prelum:VERSION
           ports:
             - containerPort: 9870
           env:
@@ -88,6 +88,9 @@ spec:
           emptyDir:
             sizeLimit: 1Gi
 ```
+
+Replace `VERSION` with the release you are deploying, or with the digest that release reports —
+[Docker and releases](docker.md) explains why a digest is the safer pin for production.
 
 ## Sizing the pod
 
