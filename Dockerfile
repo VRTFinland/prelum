@@ -44,6 +44,9 @@ COPY docs /prelum/docs
 COPY zensical.toml /prelum/zensical.toml
 COPY .github/workflows /prelum/.github/workflows
 COPY Makefile /prelum/Makefile
+# tests/test_release_workflows.py asserts on the final stage's own COPY list, so the tests that run
+# in this stage need the Dockerfile the same way they need the workflows and the Makefile.
+COPY Dockerfile /prelum/Dockerfile
 COPY scripts /prelum/scripts
 COPY tests /prelum/tests
 
