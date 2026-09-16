@@ -81,8 +81,9 @@ def _plan(tmp_path: Path, output: RenderOutput | None = None) -> _OutputPlan:
 
 
 @pytest.fixture
-def renderer() -> TypstRenderer:
-    return TypstRenderer(Settings())
+def renderer(make_renderer: Callable[..., TypstRenderer]) -> TypstRenderer:
+    """A default-configured renderer, for the tests that need no settings overrides."""
+    return make_renderer()
 
 
 def test_escape_string_preserves_hashes_inside_typst_strings(renderer: TypstRenderer):
@@ -818,8 +819,8 @@ async def test_explicit_missing_image_page_is_a_caller_compile_failure(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_full_pipeline_produces_pdf():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_render_full_pipeline_produces_pdf(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     result = await renderer.render(_job(source='#text("Hello " + data.name)', data={"name": "World"}))
     assert result.content_type == "application/pdf"
     assert result.bytes.startswith(b"%PDF")
@@ -827,8 +828,8 @@ async def test_render_full_pipeline_produces_pdf():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_preserves_hashes_in_data_strings():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_render_preserves_hashes_in_data_strings(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     source = '#assert(data.comment == "# a comment")\n#text(data.comment)'
 
     result = await renderer.render(_job(source=source, data={"comment": "# a comment"}))
@@ -838,9 +839,9 @@ async def test_render_preserves_hashes_in_data_strings():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_with_auxiliary_text_and_binary_files():
+async def test_render_with_auxiliary_text_and_binary_files(make_renderer: Callable[..., TypstRenderer]):
     png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC"
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+    renderer = make_renderer(cli_path=Path("typst"))
     files = {
         "lib/greeting.typ": RenderFile(encoding="text", content="#let greet(name) = [Hello, #name!]"),
         "assets/logo.png": RenderFile(encoding="base64", content=png),
@@ -852,8 +853,8 @@ async def test_render_with_auxiliary_text_and_binary_files():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_uses_a_nested_request_supplied_font():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_render_uses_a_nested_request_supplied_font(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     font_bytes = (Path(__file__).parent / "fixtures" / "fonts" / "Tiny5-Regular.ttf").read_bytes()
     files = {
         "fonts/custom/Tiny5-Regular.ttf": RenderFile(
@@ -873,14 +874,12 @@ async def test_render_uses_a_nested_request_supplied_font():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_uses_a_configured_font_directory():
+async def test_render_uses_a_configured_font_directory(make_renderer: Callable[..., TypstRenderer]):
     font_path = (Path(__file__).parent / "fixtures" / "fonts").resolve()
     source = '#set text(font: "Tiny5", size: 24pt)\nMounted font'
 
-    fallback = await TypstRenderer(Settings(cli_path=Path("typst"))).render(
-        _job(source=source, output_format=OutputFormat.svg)
-    )
-    mounted = await TypstRenderer(Settings(cli_path=Path("typst"), font_path=font_path)).render(
+    fallback = await make_renderer(cli_path=Path("typst")).render(_job(source=source, output_format=OutputFormat.svg))
+    mounted = await make_renderer(cli_path=Path("typst"), font_path=font_path).render(
         _job(source=source, output_format=OutputFormat.svg)
     )
 
@@ -890,9 +889,9 @@ async def test_render_uses_a_configured_font_directory():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_render_imports_a_configured_local_package():
+async def test_render_imports_a_configured_local_package(make_renderer: Callable[..., TypstRenderer]):
     package_path = (Path(__file__).parent / "fixtures" / "packages").resolve()
-    renderer = TypstRenderer(Settings(cli_path=Path("typst"), local_package_path=package_path))
+    renderer = make_renderer(cli_path=Path("typst"), local_package_path=package_path)
     source = '#import "@local/prelum-test:1.0.0": package-message\n#package-message("hello")'
 
     result = await renderer.render(_job(source=source))
@@ -902,8 +901,10 @@ async def test_render_imports_a_configured_local_package():
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_image_archive_enforces_the_configured_file_limit_with_real_typst():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst"), max_output_files=2))
+async def test_image_archive_enforces_the_configured_file_limit_with_real_typst(
+    make_renderer: Callable[..., TypstRenderer],
+):
+    renderer = make_renderer(cli_path=Path("typst"), max_output_files=2)
     source = '#text("first")\n#pagebreak()\n#text("second")\n#pagebreak()\n#text("third")'
 
     with pytest.raises(TooManyOutputFilesError):
@@ -912,8 +913,8 @@ async def test_image_archive_enforces_the_configured_file_limit_with_real_typst(
 
 @pytest.mark.integration
 @pytest.mark.asyncio
-async def test_run_typst_blocks_remote_and_local_packages():
-    renderer = TypstRenderer(Settings(cli_path=Path("typst")))
+async def test_run_typst_blocks_remote_and_local_packages(make_renderer: Callable[..., TypstRenderer]):
+    renderer = make_renderer(cli_path=Path("typst"))
     for source in (
         '#import "@preview/tidy:0.4.0"\n#text("hi")',
         '#import "@local/anything:1.0.0"\n#text("hi")',
@@ -1115,14 +1116,14 @@ _INTEGRATION_MEMORY_LIMIT = 256 * 1024 * 1024
 @pytest.mark.integration
 @pytest.mark.skipif(sys.platform != "linux", reason="prlimit is a Linux wrapper")
 @pytest.mark.asyncio
-async def test_a_bounded_render_still_compiles_with_real_typst():
+async def test_a_bounded_render_still_compiles_with_real_typst(make_renderer: Callable[..., TypstRenderer]):
     """
     The control half of the pair, and the half that catches a wrapper that silently does nothing.
 
     A split "--data N", a missing "--" or a limit set too low all make the negative test below pass
     for the wrong reason. Only a successful render proves the wrapper was assembled correctly.
     """
-    renderer = TypstRenderer(Settings(cli_path=Path("typst"), max_render_memory_bytes=_INTEGRATION_MEMORY_LIMIT))
+    renderer = make_renderer(cli_path=Path("typst"), max_render_memory_bytes=_INTEGRATION_MEMORY_LIMIT)
 
     result = await renderer.render(_job(source='#text("hello")'))
 
