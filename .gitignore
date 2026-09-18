@@ -17,6 +17,7 @@ venv
 .claude
 .serena/
 .playwright-cli/
+.worktrees/
 
 # Agent working artefacts: implementation plans are session scratch, not repository content.
 docs/superpowers/plans/
